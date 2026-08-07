@@ -34,19 +34,11 @@ func (a *WPEngineAdapter) Capabilities() AdapterCapabilities {
 	}
 }
 
-// Exec runs a wp-cli command on WP Engine.
-// WP Engine's SSH environment places sites at ~/sites/{user}/.
-// The command is wrapped as: cd ~/sites/{user}/ && wp {wpCmd}
+// Exec runs a pre-built remote shell command on WP Engine.
+// Callers (via wpcli.Command.Build) already include the cd + wp prefix.
+// WP Engine's SSH environment places sites at ~/sites/{user}/ when configured.
 func (a *WPEngineAdapter) Exec(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string) (internalssh.ExecResult, error) {
 	cfg := wpengineClientConfig(site)
-
-	wpPath := site.WPPath
-	if wpPath == "" {
-		// WP Engine default: ~/sites/{user}/
-		wpPath = fmt.Sprintf("~/sites/%s", site.User)
-	}
-
-	cmd := fmt.Sprintf("cd %s && wp %s", shellQuote(wpPath), wpCmd)
 
 	// Enforce WP Engine's 10-minute session timeout.
 	timeout := 10 * time.Minute
@@ -59,7 +51,7 @@ func (a *WPEngineAdapter) Exec(ctx context.Context, client *internalssh.SSHClien
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	return client.Exec(execCtx, cfg, site.CanonicalHost, cmd)
+	return client.Exec(execCtx, cfg, site.CanonicalHost, wpCmd)
 }
 
 // Upload transfers a local file to WP Engine via stdin piping.

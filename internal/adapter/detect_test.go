@@ -135,3 +135,28 @@ func TestShellQuote(t *testing.T) {
 		})
 	}
 }
+
+func TestRemotePathExpr(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"~/public_html", "\"$HOME\"/'public_html'"},
+		{"~", "\"$HOME\""},
+		{"~/", "\"$HOME\""},
+		{"~/sites/foo", "\"$HOME\"/'sites/foo'"},
+		{"/home/user/public_html", "'/home/user/public_html'"},
+		{"path with spaces", "'path with spaces'"},
+		{"it's", "'it'\\''s'"},
+		{"~/it's", "\"$HOME\"/'it'\\''s'"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := remotePathExpr(tt.input)
+			if got != tt.want {
+				t.Errorf("remotePathExpr(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/builtbyrobben/wpssh/internal/registry"
@@ -11,7 +12,7 @@ import (
 )
 
 // StandardAdapter handles cPanel, VPS, and other standard SSH hosts.
-// Commands run via "cd {wp_path} && wp {command}".
+// Exec runs pre-built shell commands from wpcli.Command.Build.
 // File transfers use stdin/stdout streaming (cat).
 type StandardAdapter struct{}
 
@@ -27,12 +28,11 @@ func (a *StandardAdapter) Capabilities() AdapterCapabilities {
 	}
 }
 
-// Exec runs a wp-cli command on a standard host.
-// Wraps the command as: cd {wp_path} && wp {wpCmd}
+// Exec runs a pre-built remote shell command on a standard host.
+// Callers (via wpcli.Command.Build) already include the cd + wp prefix.
 func (a *StandardAdapter) Exec(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string) (internalssh.ExecResult, error) {
 	cfg := siteToClientConfig(site)
-	cmd := fmt.Sprintf("cd %s && wp %s", shellQuote(site.WPPath), wpCmd)
-	return client.Exec(ctx, cfg, site.CanonicalHost, cmd)
+	return client.Exec(ctx, cfg, site.CanonicalHost, wpCmd)
 }
 
 // Upload streams a local file to the remote host via stdin.
@@ -83,6 +83,23 @@ func siteToClientConfig(site *registry.Site) internalssh.ClientConfig {
 		IdentityFile:   site.IdentityFile,
 		ConnectTimeout: 30 * time.Second,
 	}
+}
+
+// remotePathExpr returns a shell-safe remote path expression.
+// Leading ~/ is rewritten to "$HOME"/'…' so tilde expansion still works
+// after quoting. Absolute and other paths stay single-quoted.
+func remotePathExpr(path string) string {
+	if path == "~" {
+		return "\"$HOME\""
+	}
+	if strings.HasPrefix(path, "~/") {
+		rest := strings.TrimPrefix(path, "~/")
+		if rest == "" {
+			return "\"$HOME\""
+		}
+		return "\"$HOME\"/" + shellQuote(rest)
+	}
+	return shellQuote(path)
 }
 
 // shellQuote wraps a string in single quotes for safe shell usage.

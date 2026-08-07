@@ -580,6 +580,57 @@ func TestExpandHome(t *testing.T) {
 	}
 }
 
+func TestParseSSHConfigReader_StripsMatchExecGarbage(t *testing.T) {
+	sshConfig := `
+Host realhost
+  HostName example.com
+  User deploy
+  Port 22
+
+Match host macbook exec "nc -G 1 -z 192.168.1.52 22"
+  HostName 192.168.1.52
+  User localuser
+
+Host aftermatch
+  HostName after.example.com
+  User after
+`
+	entries, err := ParseSSHConfigReader(strings.NewReader(sshConfig))
+	if err != nil {
+		t.Fatalf("ParseSSHConfigReader: %v", err)
+	}
+
+	if findEntry(entries, "realhost") == nil {
+		t.Fatal("expected realhost entry")
+	}
+	if findEntry(entries, "aftermatch") == nil {
+		t.Fatal("expected aftermatch entry")
+	}
+
+	garbage := []string{"nc", "-G", "-z", "1", "22", "192.168.1.52", "macbook"}
+	for _, alias := range garbage {
+		if findEntry(entries, alias) != nil {
+			t.Errorf("unexpected garbage alias %q in entries", alias)
+		}
+	}
+}
+
+func TestIsValidSSHHostAlias(t *testing.T) {
+	valid := []string{"omahadentists", "mini-ts", "github.com"}
+	for _, alias := range valid {
+		if !isValidSSHHostAlias(alias) {
+			t.Errorf("expected valid alias %q", alias)
+		}
+	}
+
+	invalid := []string{"", "*", "*.example.com", "!negated", "-G", "-z", "22", "\"nc"}
+	for _, alias := range invalid {
+		if isValidSSHHostAlias(alias) {
+			t.Errorf("expected invalid alias %q", alias)
+		}
+	}
+}
+
 func findEntry(entries []SSHEntry, alias string) *SSHEntry {
 	for i := range entries {
 		if entries[i].Alias == alias {

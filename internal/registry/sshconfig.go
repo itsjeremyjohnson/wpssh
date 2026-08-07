@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bufio"
 	"io"
 	"os"
 	"path/filepath"
@@ -41,7 +42,13 @@ func ParseSSHConfigFile(path string) ([]SSHEntry, error) {
 
 // ParseSSHConfigReader parses an SSH config from an io.Reader.
 func ParseSSHConfigReader(r io.Reader) ([]SSHEntry, error) {
-	cfg, err := ssh_config.Decode(r)
+	// kevinburke/ssh_config mis-parses Match exec lines into fake Host
+	// aliases (e.g. "nc, -G, -z, ports). Strip Match blocks first.
+	filtered, err := stripSSHMatchBlocks(r)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := ssh_config.Decode(filtered)
 	if err != nil {
 		return nil, err
 	}
@@ -55,8 +62,8 @@ func extractEntries(cfg *ssh_config.Config) ([]SSHEntry, error) {
 		for _, pattern := range host.Patterns {
 			alias := pattern.String()
 
-			// Skip wildcard entries and negated patterns.
-			if alias == "*" || strings.ContainsAny(alias, "*?") || strings.HasPrefix(alias, "!") {
+			// Skip wildcards, negated patterns, and Match-exec garbage.
+			if !isValidSSHHostAlias(alias) {
 				continue
 			}
 
@@ -94,6 +101,62 @@ func extractEntries(cfg *ssh_config.Config) ([]SSHEntry, error) {
 		}
 	}
 	return entries, nil
+}
+
+// stripSSHMatchBlocks removes OpenSSH Match blocks so they are not
+// misinterpreted as Host entries by the SSH config parser.
+func stripSSHMatchBlocks(r io.Reader) (io.Reader, error) {
+	var b strings.Builder
+	scanner := bufio.NewScanner(r)
+	// Match lines can be long; raise the default token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	inMatch := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+
+		if strings.HasPrefix(lower, "match ") || lower == "match" {
+			inMatch = true
+			continue
+		}
+		if inMatch {
+			// A new Host starts a real host block and ends Match scope.
+			if strings.HasPrefix(lower, "host ") || lower == "host" {
+				inMatch = false
+			} else {
+				// Still inside Match body (keywords, blanks, comments).
+				continue
+			}
+		}
+		if !inMatch {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return strings.NewReader(b.String()), nil
+}
+
+// isValidSSHHostAlias rejects wildcards and garbage tokens leaked from Match exec lines.
+func isValidSSHHostAlias(alias string) bool {
+	if alias == "" || alias == "*" {
+		return false
+	}
+	if strings.ContainsAny(alias, "*?") || strings.HasPrefix(alias, "!") {
+		return false
+	}
+	// Flags / quoted fragments from Match exec "nc -G 1 -z host port"
+	if strings.HasPrefix(alias, "-") || strings.Contains(alias, "\"") {
+		return false
+	}
+	// Bare ports are not host aliases.
+	if _, err := strconv.Atoi(alias); err == nil {
+		return false
+	}
+	return true
 }
 
 // expandHome replaces ~ prefix with the user's home directory.
