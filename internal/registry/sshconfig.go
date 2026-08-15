@@ -114,11 +114,13 @@ func stripSSHMatchBlocks(r io.Reader) (io.Reader, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-		fields := strings.Fields(trimmed)
-		directive := ""
-		if len(fields) > 0 {
-			directive = strings.ToLower(fields[0])
+		directive := trimmed
+		arguments := ""
+		if separator := strings.IndexAny(trimmed, " \t="); separator >= 0 {
+			directive = trimmed[:separator]
+			arguments = strings.TrimLeft(trimmed[separator:], " \t=")
 		}
+		directive = strings.ToLower(directive)
 
 		if directive == "match" {
 			inMatch = true
@@ -135,7 +137,10 @@ func stripSSHMatchBlocks(r io.Reader) (io.Reader, error) {
 		}
 		if !inMatch {
 			if directive == "host" {
-				line = strings.Join(fields, " ")
+				line = "Host"
+				if arguments != "" {
+					line += " " + arguments
+				}
 			}
 			b.WriteString(line)
 			b.WriteByte('\n')

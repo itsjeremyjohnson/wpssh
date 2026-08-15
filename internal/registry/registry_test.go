@@ -594,6 +594,12 @@ Match host macbook exec "nc -G 1 -z 192.168.1.52 22"
 Host	aftermatch
   HostName after.example.com
   User after
+
+Match all
+  User nobody
+
+Host=equalsmatch
+  HostName equals.example.com
 `
 	entries, err := ParseSSHConfigReader(strings.NewReader(sshConfig))
 	if err != nil {
@@ -605,6 +611,9 @@ Host	aftermatch
 	}
 	if findEntry(entries, "aftermatch") == nil {
 		t.Fatal("expected aftermatch entry")
+	}
+	if findEntry(entries, "equalsmatch") == nil {
+		t.Fatal("expected equalsmatch entry")
 	}
 
 	garbage := []string{"nc", "-G", "-z", "1", "22", "192.168.1.52", "macbook"}
