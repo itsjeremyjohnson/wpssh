@@ -114,15 +114,19 @@ func stripSSHMatchBlocks(r io.Reader) (io.Reader, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-		lower := strings.ToLower(trimmed)
+		fields := strings.Fields(trimmed)
+		directive := ""
+		if len(fields) > 0 {
+			directive = strings.ToLower(fields[0])
+		}
 
-		if strings.HasPrefix(lower, "match ") || lower == "match" {
+		if directive == "match" {
 			inMatch = true
 			continue
 		}
 		if inMatch {
 			// A new Host starts a real host block and ends Match scope.
-			if strings.HasPrefix(lower, "host ") || lower == "host" {
+			if directive == "host" {
 				inMatch = false
 			} else {
 				// Still inside Match body (keywords, blanks, comments).
@@ -130,6 +134,9 @@ func stripSSHMatchBlocks(r io.Reader) (io.Reader, error) {
 			}
 		}
 		if !inMatch {
+			if directive == "host" {
+				line = strings.Join(fields, " ")
+			}
 			b.WriteString(line)
 			b.WriteByte('\n')
 		}
@@ -150,10 +157,6 @@ func isValidSSHHostAlias(alias string) bool {
 	}
 	// Flags / quoted fragments from Match exec "nc -G 1 -z host port"
 	if strings.HasPrefix(alias, "-") || strings.Contains(alias, "\"") {
-		return false
-	}
-	// Bare ports are not host aliases.
-	if _, err := strconv.Atoi(alias); err == nil {
 		return false
 	}
 	return true

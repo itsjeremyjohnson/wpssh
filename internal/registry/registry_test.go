@@ -591,7 +591,7 @@ Match host macbook exec "nc -G 1 -z 192.168.1.52 22"
   HostName 192.168.1.52
   User localuser
 
-Host aftermatch
+Host	aftermatch
   HostName after.example.com
   User after
 `
@@ -616,14 +616,14 @@ Host aftermatch
 }
 
 func TestIsValidSSHHostAlias(t *testing.T) {
-	valid := []string{"omahadentists", "mini-ts", "github.com"}
+	valid := []string{"omahadentists", "mini-ts", "github.com", "123"}
 	for _, alias := range valid {
 		if !isValidSSHHostAlias(alias) {
 			t.Errorf("expected valid alias %q", alias)
 		}
 	}
 
-	invalid := []string{"", "*", "*.example.com", "!negated", "-G", "-z", "22", "\"nc"}
+	invalid := []string{"", "*", "*.example.com", "!negated", "-G", "-z", "\"nc"}
 	for _, alias := range invalid {
 		if isValidSSHHostAlias(alias) {
 			t.Errorf("expected invalid alias %q", alias)
