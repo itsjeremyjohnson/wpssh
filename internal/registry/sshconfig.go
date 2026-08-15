@@ -118,7 +118,9 @@ func stripSSHMatchBlocks(r io.Reader) (io.Reader, error) {
 		arguments := ""
 		if separator := strings.IndexAny(trimmed, " \t="); separator >= 0 {
 			directive = trimmed[:separator]
-			arguments = strings.TrimLeft(trimmed[separator:], " \t=")
+			arguments = strings.TrimLeft(trimmed[separator:], " \t")
+			arguments = strings.TrimPrefix(arguments, "=")
+			arguments = strings.TrimLeft(arguments, " \t")
 		}
 		directive = strings.ToLower(directive)
 
@@ -139,7 +141,7 @@ func stripSSHMatchBlocks(r io.Reader) (io.Reader, error) {
 			if directive == "host" {
 				line = "Host"
 				if arguments != "" {
-					line += " " + arguments
+					line += "=" + arguments
 				}
 			}
 			b.WriteString(line)

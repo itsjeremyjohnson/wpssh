@@ -580,6 +580,25 @@ func TestExpandHome(t *testing.T) {
 	}
 }
 
+func TestParseSSHConfigReader_HostSeparators(t *testing.T) {
+	sshConfig := `
+Host ordinary
+Host=equals
+Host = spaced
+Host ==leading-equals
+`
+	entries, err := ParseSSHConfigReader(strings.NewReader(sshConfig))
+	if err != nil {
+		t.Fatalf("ParseSSHConfigReader: %v", err)
+	}
+
+	for _, alias := range []string{"ordinary", "equals", "spaced", "=leading-equals"} {
+		if findEntry(entries, alias) == nil {
+			t.Errorf("expected alias %q", alias)
+		}
+	}
+}
+
 func TestParseSSHConfigReader_StripsMatchExecGarbage(t *testing.T) {
 	sshConfig := `
 Host realhost
