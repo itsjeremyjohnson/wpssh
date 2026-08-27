@@ -151,3 +151,32 @@ func TestShellEscapeFunction(t *testing.T) {
 		}
 	}
 }
+
+func TestPathEscape(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"~/public_html", "\"$HOME\"/'public_html'"},
+		{"~", "\"$HOME\""},
+		{"~/", "\"$HOME\""},
+		{"~/sites/foo", "\"$HOME\"/'sites/foo'"},
+		{"/var/www/html", "'/var/www/html'"},
+		{"/home/user/my site", "'/home/user/my site'"},
+	}
+
+	for _, tt := range tests {
+		got := pathEscape(tt.input)
+		if got != tt.want {
+			t.Errorf("pathEscape(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestBuildTildePath(t *testing.T) {
+	got := New("core", "version").Build("~/public_html")
+	want := "cd \"$HOME\"/'public_html' && wp core version"
+	if got != want {
+		t.Errorf("Build(tilde) = %q, want %q", got, want)
+	}
+}

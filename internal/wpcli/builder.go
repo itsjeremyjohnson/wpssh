@@ -48,12 +48,12 @@ func (c *Command) Arg(value string) *Command {
 }
 
 // Build returns the full command string: "cd {wpPath} && wp {parts} {args} {flags}"
-// All values are shell-escaped using single quotes.
+// Path expressions preserve remote ~/ expansion; other values are single-quoted.
 func (c *Command) Build(wpPath string) string {
 	var b strings.Builder
 
 	b.WriteString("cd ")
-	b.WriteString(shellEscape(wpPath))
+	b.WriteString(pathEscape(wpPath))
 	b.WriteString(" && wp")
 
 	for _, p := range c.parts {
@@ -129,6 +129,18 @@ func (c *Command) CacheKey() string {
 	}
 
 	return strings.Join(parts, ":")
+}
+
+// pathEscape returns a shell-safe remote path expression.
+// Leading ~/ becomes "$HOME"/'…' so tilde expansion still works remotely.
+func pathEscape(path string) string {
+	if path == "~" || path == "~/" {
+		return "\"$HOME\""
+	}
+	if strings.HasPrefix(path, "~/") {
+		return "\"$HOME\"/" + shellEscape(strings.TrimPrefix(path, "~/"))
+	}
+	return shellEscape(path)
 }
 
 // shellEscape wraps a value in single quotes, escaping any single quotes
