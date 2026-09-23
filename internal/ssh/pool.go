@@ -2,117 +2,166 @@ package ssh
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // poolEntry holds a cached SSH connection and its metadata.
 type poolEntry struct {
 	client   *ssh.Client
 	lastUsed time.Time
+	active   int
 	mu       sync.Mutex // Guards concurrent session creation on same connection.
 }
 
-// Pool manages reusable SSH connections per host with rate limiter integration.
+// Pool manages reusable SSH connections and limits each command per host.
 type Pool struct {
-	mu          sync.Mutex
-	connections map[string]*poolEntry // Keyed by canonical host (IP:port).
-	limiter     *RateLimiter
-	idleTimeout time.Duration
-	closed      bool
+	mu             sync.Mutex
+	connections    map[string]*poolEntry // Keyed by destination and SSH identity.
+	keyLocks       sync.Map              // Channels serialize connection setup per SSH identity.
+	limiter        *RateLimiter
+	idleTimeout    time.Duration
+	verifyHostKeys bool
+	closed         bool
 }
 
 // NewPool creates a connection pool that integrates with the given rate limiter.
 func NewPool(limiter *RateLimiter, idleTimeout time.Duration) *Pool {
+	return newPool(limiter, idleTimeout, false)
+}
+
+// NewVerifiedPool requires a pinned SSH host key for every connection.
+func NewVerifiedPool(limiter *RateLimiter, idleTimeout time.Duration) *Pool {
+	return newPool(limiter, idleTimeout, true)
+}
+
+func newPool(limiter *RateLimiter, idleTimeout time.Duration, verifyHostKeys bool) *Pool {
 	if idleTimeout == 0 {
 		idleTimeout = 5 * time.Minute
 	}
 	p := &Pool{
-		connections: make(map[string]*poolEntry),
-		limiter:     limiter,
-		idleTimeout: idleTimeout,
+		connections:    make(map[string]*poolEntry),
+		limiter:        limiter,
+		idleTimeout:    idleTimeout,
+		verifyHostKeys: verifyHostKeys,
 	}
 	go p.reapLoop()
 	return p
 }
 
 // Get returns an SSH client for the given config. If a healthy cached
-// connection exists, it is reused. Otherwise, a new connection is dialed
-// after acquiring a rate limiter slot.
+// connection exists, it is reused. Otherwise, a new connection is dialed.
+// Every call holds a host rate-limiter slot until release.
 //
 // The returned release function MUST be called when the caller is done
 // using the connection. It updates last-used time (the connection stays
 // in the pool for reuse).
 func (p *Pool) Get(ctx context.Context, cfg ClientConfig, canonicalHost string) (*ssh.Client, func(), error) {
+	key := connectionKey(cfg, canonicalHost)
+	slotRelease, err := p.limiter.Acquire(ctx, canonicalHost)
+	if err != nil {
+		return nil, nil, fmt.Errorf("rate limiter: %w", err)
+	}
+	keyLock, _ := p.keyLocks.LoadOrStore(key, make(chan struct{}, 1))
+	select {
+	case keyLock.(chan struct{}) <- struct{}{}:
+		defer func() { <-keyLock.(chan struct{}) }()
+	case <-ctx.Done():
+		slotRelease()
+		return nil, nil, ctx.Err()
+	}
+
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		slotRelease()
 		return nil, nil, fmt.Errorf("pool is closed")
 	}
 
 	// Check for existing healthy connection.
-	if entry, ok := p.connections[canonicalHost]; ok {
+	if entry, ok := p.connections[key]; ok {
+		entry.mu.Lock()
+		entry.active++
+		shared := entry.active > 1
+		entry.mu.Unlock()
 		p.mu.Unlock()
-		// Test the connection with a keepalive request.
-		_, _, err := entry.client.SendRequest("keepalive@openssh.com", true, nil)
+		// A live session already proves a shared connection is usable. Probing
+		// it could close that session when this request is cancelled.
+		var err error
+		if !shared {
+			err = keepalive(ctx, entry.client)
+		}
 		if err == nil {
 			entry.mu.Lock()
 			entry.lastUsed = time.Now()
 			entry.mu.Unlock()
 			release := func() {
 				entry.mu.Lock()
+				entry.active--
 				entry.lastUsed = time.Now()
 				entry.mu.Unlock()
+				slotRelease()
 			}
 			return entry.client, release, nil
 		}
 		// Connection is dead; remove and dial fresh.
 		p.mu.Lock()
-		delete(p.connections, canonicalHost)
+		delete(p.connections, key)
+		entry.mu.Lock()
+		entry.active--
+		entry.mu.Unlock()
 		entry.client.Close()
 		p.mu.Unlock()
+		if ctx.Err() != nil {
+			slotRelease()
+			return nil, nil, ctx.Err()
+		}
 	} else {
 		p.mu.Unlock()
 	}
 
-	// Acquire rate limiter slot before dialing.
-	rateLimitRelease, err := p.limiter.Acquire(ctx, canonicalHost)
+	client, err := dial(ctx, cfg, p.verifyHostKeys)
 	if err != nil {
-		return nil, nil, fmt.Errorf("rate limiter: %w", err)
-	}
-
-	client, err := dial(ctx, cfg)
-	if err != nil {
-		rateLimitRelease()
-		p.limiter.OnTransportError(canonicalHost)
+		slotRelease()
+		if ctx.Err() == nil {
+			p.limiter.OnTransportError(canonicalHost)
+		}
 		return nil, nil, err
 	}
 
-	rateLimitRelease()
 	p.limiter.OnSuccess(canonicalHost)
 
 	entry := &poolEntry{
 		client:   client,
 		lastUsed: time.Now(),
+		active:   1,
 	}
 
 	p.mu.Lock()
-	// If a connection appeared while we were dialing, prefer ours (the other
-	// might be stale).
-	if old, ok := p.connections[canonicalHost]; ok {
-		old.client.Close()
+	if p.closed {
+		p.mu.Unlock()
+		client.Close()
+		slotRelease()
+		return nil, nil, fmt.Errorf("pool is closed")
 	}
-	p.connections[canonicalHost] = entry
+	p.connections[key] = entry
 	p.mu.Unlock()
 
 	release := func() {
 		entry.mu.Lock()
+		entry.active--
 		entry.lastUsed = time.Now()
 		entry.mu.Unlock()
+		slotRelease()
 	}
 	return client, release, nil
 }
@@ -130,13 +179,49 @@ func (p *Pool) Close() error {
 }
 
 // Remove closes and removes a specific host's connection from the pool.
-func (p *Pool) Remove(canonicalHost string) {
+func (p *Pool) Remove(cfg ClientConfig, canonicalHost string) {
+	key := connectionKey(cfg, canonicalHost)
+	keyLock, _ := p.keyLocks.LoadOrStore(key, make(chan struct{}, 1))
+	keyLock.(chan struct{}) <- struct{}{}
+	defer func() { <-keyLock.(chan struct{}) }()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if entry, ok := p.connections[canonicalHost]; ok {
+	if entry, ok := p.connections[key]; ok {
+		entry.mu.Lock()
+		active := entry.active
+		entry.mu.Unlock()
+		if active > 1 {
+			return
+		}
 		entry.client.Close()
-		delete(p.connections, canonicalHost)
+		delete(p.connections, key)
 	}
+}
+
+func keepalive(ctx context.Context, client *ssh.Client) error {
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = client.Close()
+		return ctx.Err()
+	case <-timer.C:
+		_ = client.Close()
+		return errors.New("SSH keepalive timed out")
+	}
+}
+
+func connectionKey(cfg ClientConfig, canonicalHost string) string {
+	passphraseHash := sha256.Sum256([]byte(cfg.Passphrase))
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%d\x00%t\x00%x", canonicalHost, cfg.Host, cfg.User, cfg.IdentityFile, cfg.Port, cfg.ForwardAgent, passphraseHash)
 }
 
 // reapLoop periodically closes idle connections.
@@ -144,27 +229,34 @@ func (p *Pool) reapLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		p.mu.Lock()
-		if p.closed {
-			p.mu.Unlock()
+		if p.reapIdle() {
 			return
 		}
-		now := time.Now()
-		for host, entry := range p.connections {
-			entry.mu.Lock()
-			idle := now.Sub(entry.lastUsed)
-			entry.mu.Unlock()
-			if idle > p.idleTimeout {
-				entry.client.Close()
-				delete(p.connections, host)
-			}
-		}
-		p.mu.Unlock()
 	}
 }
 
+func (p *Pool) reapIdle() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return true
+	}
+	now := time.Now()
+	for key, entry := range p.connections {
+		entry.mu.Lock()
+		idle := now.Sub(entry.lastUsed)
+		active := entry.active
+		entry.mu.Unlock()
+		if active == 0 && idle > p.idleTimeout {
+			entry.client.Close()
+			delete(p.connections, key)
+		}
+	}
+	return false
+}
+
 // dial creates a new SSH connection using the provided config.
-func dial(ctx context.Context, cfg ClientConfig) (*ssh.Client, error) {
+func dial(ctx context.Context, cfg ClientConfig, verifyHostKeys bool) (*ssh.Client, error) {
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
 	// Build auth methods.
@@ -194,10 +286,21 @@ func dial(ctx context.Context, cfg ClientConfig) (*ssh.Client, error) {
 		return nil, fmt.Errorf("no auth methods available for %s", addr)
 	}
 
+	hostKeyCallback := ssh.InsecureIgnoreHostKey() // #nosec G106 -- preserves the legacy CLI's existing behavior.
+	if verifyHostKeys {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("locate SSH known_hosts: %w", err)
+		}
+		hostKeyCallback, err = loadHostKeyCallback(filepath.Join(home, ".ssh", "known_hosts"))
+		if err != nil {
+			return nil, fmt.Errorf("load SSH known_hosts: %w", err)
+		}
+	}
 	sshCfg := &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         cfg.ConnectTimeout,
 	}
 
@@ -215,4 +318,8 @@ func dial(ctx context.Context, cfg ClientConfig) (*ssh.Client, error) {
 	}
 
 	return ssh.NewClient(sshConn, chans, reqs), nil
+}
+
+func loadHostKeyCallback(path string) (ssh.HostKeyCallback, error) {
+	return knownhosts.New(path)
 }

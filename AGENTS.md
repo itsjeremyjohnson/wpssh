@@ -2,7 +2,8 @@
 
 ## Project Structure
 
-- `cmd/wpgo/`: CLI entrypoint
+- `cmd/wpssh-mcp/`: HTTPS MCP server entrypoint
+- `cmd/wpgo/`: legacy CLI entrypoint
 - `internal/`: implementation packages
   - `cmd/`: Kong CLI commands
   - `ssh/`: SSH client
@@ -16,10 +17,12 @@
   - `adapter/`: Adapters
   - `batch/`: Batch operations
   - `registry/`: Registry
+  - `mcpserver/`: MCP tools and HTTP authentication
 
 ## Build, Test, and Development Commands
 
-- `make` / `make build`: build `bin/wpgo`
+- `make` / `make build`: build `bin/wpssh-mcp`
+- `make build-cli`: build legacy `bin/wpgo`
 - `make tools`: install pinned dev tools into `.tools/`
 - `make fmt` / `make lint` / `make test` / `make ci`: format, lint, test, full local gate
 - `make test-integration`: run integration tests

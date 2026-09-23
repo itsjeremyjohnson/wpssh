@@ -2,16 +2,19 @@ SHELL := /bin/bash
 
 .DEFAULT_GOAL := build
 
-.PHONY: build wpgo help fmt fmt-check lint test test-integration test-all ci tools install clean
+.PHONY: build build-cli wpgo help fmt fmt-check lint test test-integration test-all ci tools install install-cli clean
 
 BIN_DIR := $(CURDIR)/bin
-BIN := $(BIN_DIR)/wpgo
-CMD := ./cmd/wpgo
+BIN := $(BIN_DIR)/wpssh-mcp
+CMD := ./cmd/wpssh-mcp
+CLI_BIN := $(BIN_DIR)/wpgo
+CLI_CMD := ./cmd/wpgo
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo "")
 DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+LDFLAGS := -X main.version=$(VERSION)
+CLI_LDFLAGS := $(LDFLAGS) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 TOOLS_DIR := $(CURDIR)/.tools
 GOFUMPT := $(TOOLS_DIR)/gofumpt
@@ -27,17 +30,21 @@ build:
 	@mkdir -p $(BIN_DIR)
 	@go build -ldflags "$(LDFLAGS)" -o $(BIN) $(CMD)
 
-wpgo: build
+build-cli:
+	@mkdir -p $(BIN_DIR)
+	@go build -ldflags "$(CLI_LDFLAGS)" -o $(CLI_BIN) $(CLI_CMD)
+
+wpgo: build-cli
 	@if [ -n "$(RUN_ARGS)" ]; then \
-		$(BIN) $(RUN_ARGS); \
+		$(CLI_BIN) $(RUN_ARGS); \
 	elif [ -z "$(ARGS)" ]; then \
-		$(BIN) --help; \
+		$(CLI_BIN) --help; \
 	else \
-		$(BIN) $(ARGS); \
+		$(CLI_BIN) $(ARGS); \
 	fi
 
-help: build
-	@$(BIN) --help
+help: build-cli
+	@$(CLI_BIN) --help
 
 tools:
 	@mkdir -p $(TOOLS_DIR)
@@ -60,7 +67,7 @@ lint: tools
 	@$(GOLANGCI_LINT) run
 
 test:
-	@go test -race -count=1 ./internal/...
+	@go test -race -count=1 ./internal/... ./cmd/...
 
 test-integration:
 	@if [ -n "$(shell go list -tags=integration ./tests/integration/... 2>/dev/null)" ]; then \
@@ -73,7 +80,10 @@ test-all:
 	@go test -race -tags=integration ./...
 
 install:
-	@go install -ldflags "$(LDFLAGS)" ./cmd/wpgo
+	@go install -ldflags "$(LDFLAGS)" ./cmd/wpssh-mcp
+
+install-cli:
+	@go install -ldflags "$(CLI_LDFLAGS)" ./cmd/wpgo
 
 clean:
 	rm -rf bin/ dist/ .tools/
