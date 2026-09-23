@@ -31,6 +31,8 @@ The default catalog is read-only: `list_sites`, `list_plugins`, `list_themes`, `
 
 ## Legacy CLI
 
+The legacy `wpgo` command keeps its existing SSH host-key behavior. The MCP server requires pinned keys in `known_hosts`.
+
 ### Installation
 
 ### Homebrew (macOS/Linux)

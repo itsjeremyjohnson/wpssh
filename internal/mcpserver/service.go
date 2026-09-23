@@ -56,7 +56,7 @@ func NewService() (Service, error) {
 	for host, rl := range cfg.RateLimits {
 		hostConfigs[host] = internalssh.HostConfig{Delay: rl.Delay, MaxConns: rl.MaxConns}
 	}
-	pool := internalssh.NewPool(internalssh.NewRateLimiter(hostConfigs), 5*time.Minute)
+	pool := internalssh.NewVerifiedPool(internalssh.NewRateLimiter(hostConfigs), 5*time.Minute)
 
 	return &liveService{registry: reg, ssh: internalssh.NewSSHClient(pool)}, nil
 }

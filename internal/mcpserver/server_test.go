@@ -43,6 +43,18 @@ type bearerTransport struct {
 	base  http.RoundTripper
 }
 
+type publicHostTransport struct{ base http.RoundTripper }
+
+func (t publicHostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Host = "mcp.example.com"
+	resp, err := t.base.RoundTrip(r)
+	if err != nil {
+		return nil, fmt.Errorf("send proxy test request: %w", err)
+	}
+	return resp, nil
+}
+
 func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+t.token)
@@ -56,7 +68,7 @@ func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestHTTPDiscoveryAndCalls(t *testing.T) {
 	const token = "12345678901234567890123456789012"
 	service := &fakeService{}
-	server := httptest.NewServer(BearerAuth(token, Handler(service, false)))
+	server := httptest.NewServer(BearerAuth(token, Handler(service, false, "0.1.0")))
 	defer server.Close()
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
 	httpClient := &http.Client{Transport: bearerTransport{token: token, base: http.DefaultTransport}}
@@ -67,6 +79,9 @@ func TestHTTPDiscoveryAndCalls(t *testing.T) {
 		}
 		if got := session.InitializeResult().ProtocolVersion; got != "2026-07-28" {
 			t.Fatalf("protocol version = %q, want 2026-07-28", got)
+		}
+		if info := session.InitializeResult().ServerInfo; info == nil || info.Version != "0.1.0" {
+			t.Fatalf("server version = %+v, want 0.1.0", info)
 		}
 		names := make([]string, 0, 7)
 		for tool, err := range session.Tools(context.Background(), nil) {
@@ -107,7 +122,7 @@ func TestHTTPDiscoveryAndCalls(t *testing.T) {
 func TestHTTPAuthentication(t *testing.T) {
 	const token = "12345678901234567890123456789012"
 	service := &fakeService{}
-	server := httptest.NewServer(BearerAuth(token, Handler(service, true)))
+	server := httptest.NewServer(BearerAuth(token, Handler(service, true, "0.1.0")))
 	defer server.Close()
 	for _, provided := range []string{"", "Bearer wrong"} {
 		req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"server/discover"}`))
@@ -129,7 +144,7 @@ func TestHTTPAuthentication(t *testing.T) {
 func TestWriteToolUsesExplicitSiteAndEscapesValue(t *testing.T) {
 	const token = "12345678901234567890123456789012"
 	service := &fakeService{}
-	server := httptest.NewServer(BearerAuth(token, Handler(service, true)))
+	server := httptest.NewServer(BearerAuth(token, Handler(service, true, "0.1.0")))
 	defer server.Close()
 	httpClient := &http.Client{Transport: bearerTransport{token: token, base: http.DefaultTransport}}
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
@@ -147,12 +162,31 @@ func TestWriteToolUsesExplicitSiteAndEscapesValue(t *testing.T) {
 	if service.site != "client" || !strings.Contains(service.command, `'it'\''s live; touch /tmp/bad'`) {
 		t.Fatalf("unsafe command: site=%q command=%q", service.site, service.command)
 	}
+	result, err = session.CallTool(context.Background(), &mcp.CallToolParams{Name: "update_option", Arguments: map[string]any{
+		"site": "client", "key": "posts_per_page", "value": "-1",
+	}})
+	if err != nil || result.IsError || !strings.Contains(service.command, "'-1'") {
+		t.Fatalf("negative option value rejected: result=%+v err=%v command=%q", result, err, service.command)
+	}
+}
+
+func TestLoopbackProxyAcceptsPublicHost(t *testing.T) {
+	const token = "12345678901234567890123456789012"
+	server := httptest.NewServer(BearerAuth(token, Handler(&fakeService{}, false, "0.1.0")))
+	defer server.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	httpClient := &http.Client{Transport: bearerTransport{token: token, base: publicHostTransport{base: http.DefaultTransport}}}
+	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: server.URL, HTTPClient: httpClient}, nil)
+	if err != nil {
+		t.Fatalf("connect through host-preserving proxy: %v", err)
+	}
+	defer session.Close()
 }
 
 func TestToolArgumentsRejectWPCLIFlags(t *testing.T) {
 	const token = "12345678901234567890123456789012"
 	service := &fakeService{}
-	server := httptest.NewServer(BearerAuth(token, Handler(service, true)))
+	server := httptest.NewServer(BearerAuth(token, Handler(service, true, "0.1.0")))
 	defer server.Close()
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
 	httpClient := &http.Client{Transport: bearerTransport{token: token, base: http.DefaultTransport}}
@@ -182,7 +216,7 @@ func TestToolArgumentsRejectWPCLIFlags(t *testing.T) {
 func TestHTTPSAndOriginProtection(t *testing.T) {
 	const token = "12345678901234567890123456789012"
 	service := &fakeService{}
-	server := httptest.NewTLSServer(BearerAuth(token, Handler(service, false)))
+	server := httptest.NewTLSServer(BearerAuth(token, Handler(service, false, "0.1.0")))
 	defer server.Close()
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
 	httpClient := server.Client()

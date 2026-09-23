@@ -25,23 +25,34 @@ type poolEntry struct {
 
 // Pool manages reusable SSH connections and limits each command per host.
 type Pool struct {
-	mu          sync.Mutex
-	connections map[string]*poolEntry // Keyed by destination and SSH identity.
-	keyLocks    sync.Map              // Channels serialize connection setup per SSH identity.
-	limiter     *RateLimiter
-	idleTimeout time.Duration
-	closed      bool
+	mu             sync.Mutex
+	connections    map[string]*poolEntry // Keyed by destination and SSH identity.
+	keyLocks       sync.Map              // Channels serialize connection setup per SSH identity.
+	limiter        *RateLimiter
+	idleTimeout    time.Duration
+	verifyHostKeys bool
+	closed         bool
 }
 
 // NewPool creates a connection pool that integrates with the given rate limiter.
 func NewPool(limiter *RateLimiter, idleTimeout time.Duration) *Pool {
+	return newPool(limiter, idleTimeout, false)
+}
+
+// NewVerifiedPool requires a pinned SSH host key for every connection.
+func NewVerifiedPool(limiter *RateLimiter, idleTimeout time.Duration) *Pool {
+	return newPool(limiter, idleTimeout, true)
+}
+
+func newPool(limiter *RateLimiter, idleTimeout time.Duration, verifyHostKeys bool) *Pool {
 	if idleTimeout == 0 {
 		idleTimeout = 5 * time.Minute
 	}
 	p := &Pool{
-		connections: make(map[string]*poolEntry),
-		limiter:     limiter,
-		idleTimeout: idleTimeout,
+		connections:    make(map[string]*poolEntry),
+		limiter:        limiter,
+		idleTimeout:    idleTimeout,
+		verifyHostKeys: verifyHostKeys,
 	}
 	go p.reapLoop()
 	return p
@@ -118,7 +129,7 @@ func (p *Pool) Get(ctx context.Context, cfg ClientConfig, canonicalHost string) 
 		p.mu.Unlock()
 	}
 
-	client, err := dial(ctx, cfg)
+	client, err := dial(ctx, cfg, p.verifyHostKeys)
 	if err != nil {
 		slotRelease()
 		if ctx.Err() == nil {
@@ -245,7 +256,7 @@ func (p *Pool) reapIdle() bool {
 }
 
 // dial creates a new SSH connection using the provided config.
-func dial(ctx context.Context, cfg ClientConfig) (*ssh.Client, error) {
+func dial(ctx context.Context, cfg ClientConfig, verifyHostKeys bool) (*ssh.Client, error) {
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 
 	// Build auth methods.
@@ -275,13 +286,16 @@ func dial(ctx context.Context, cfg ClientConfig) (*ssh.Client, error) {
 		return nil, fmt.Errorf("no auth methods available for %s", addr)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("locate SSH known_hosts: %w", err)
-	}
-	hostKeyCallback, err := loadHostKeyCallback(filepath.Join(home, ".ssh", "known_hosts"))
-	if err != nil {
-		return nil, fmt.Errorf("load SSH known_hosts: %w", err)
+	hostKeyCallback := ssh.InsecureIgnoreHostKey() // #nosec G106 -- preserves the legacy CLI's existing behavior.
+	if verifyHostKeys {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("locate SSH known_hosts: %w", err)
+		}
+		hostKeyCallback, err = loadHostKeyCallback(filepath.Join(home, ".ssh", "known_hosts"))
+		if err != nil {
+			return nil, fmt.Errorf("load SSH known_hosts: %w", err)
+		}
 	}
 	sshCfg := &ssh.ClientConfig{
 		User:            cfg.User,

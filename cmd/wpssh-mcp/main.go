@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -61,7 +62,7 @@ func run() error {
 	defer service.Close()
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpserver.BearerAuth(token, mcpserver.Handler(service, os.Getenv("WPSMCP_ALLOW_WRITES") == "1")))
+	mux.Handle("/mcp", mcpserver.BearerAuth(token, mcpserver.Handler(service, os.Getenv("WPSMCP_ALLOW_WRITES") == "1", version)))
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -96,7 +97,7 @@ func loadToken() (string, error) {
 		}
 		return string(bytes.TrimSpace(data)), nil
 	}
-	return os.Getenv("WPSMCP_TOKEN"), nil
+	return strings.TrimSpace(os.Getenv("WPSMCP_TOKEN")), nil
 }
 
 func loopbackAddress(addr string) bool {

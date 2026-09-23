@@ -63,8 +63,8 @@ type actionOutput struct {
 
 // NewServer registers a fixed catalog. All site and operation context arrives
 // in each tools/call request; no conversation state is stored on the server.
-func NewServer(service Service, allowWrites bool, schemaCache *mcp.SchemaCache) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "wpssh", Version: "0.1.0"}, &mcp.ServerOptions{SchemaCache: schemaCache})
+func NewServer(service Service, allowWrites bool, schemaCache *mcp.SchemaCache, version string) *mcp.Server {
+	s := mcp.NewServer(&mcp.Implementation{Name: "wpssh", Version: version}, &mcp.ServerOptions{SchemaCache: schemaCache})
 	read := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	write := &mcp.ToolAnnotations{ReadOnlyHint: false}
 
@@ -180,7 +180,10 @@ func pluginAction(ctx context.Context, service Service, in pluginInput, action s
 }
 
 func validatePositional(value string) error {
-	if strings.HasPrefix(strings.TrimSpace(value), "-") {
+	value = strings.TrimSpace(value)
+
+	shortFlag := len(value) > 1 && value[0] == '-' && ((value[1] >= 'a' && value[1] <= 'z') || (value[1] >= 'A' && value[1] <= 'Z'))
+	if strings.HasPrefix(value, "--") || shortFlag {
 		return errUnsafeArgument
 	}
 
@@ -205,11 +208,11 @@ func run(ctx context.Context, service Service, site string, command *wpcli.Comma
 }
 
 // Handler serves one stateless MCP request per HTTP POST.
-func Handler(service Service, allowWrites bool) http.Handler {
+func Handler(service Service, allowWrites bool, version string) http.Handler {
 	schemaCache := mcp.NewSchemaCache()
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return NewServer(service, allowWrites, schemaCache)
-	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true})
+		return NewServer(service, allowWrites, schemaCache, version)
+	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, PropagateRequestCancellation: true, DisableLocalhostProtection: true})
 
 	return http.NewCrossOriginProtection().Handler(mcpHandler)
 }
