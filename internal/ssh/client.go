@@ -77,7 +77,7 @@ func (c *SSHClient) execInternal(ctx context.Context, cfg ClientConfig, canonica
 	session, err := client.NewSession()
 	if err != nil {
 		// Session creation failure is a transport error — connection may be dead.
-		c.pool.Remove(canonicalHost)
+		c.pool.Remove(cfg, canonicalHost)
 		return ExecResult{Duration: time.Since(start)}, fmt.Errorf("new session: %w", err)
 	}
 	defer session.Close()

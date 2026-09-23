@@ -6,6 +6,19 @@ changelog:
   disable: true
 
 builds:
+  - id: wpssh-mcp
+    main: ./cmd/wpssh-mcp
+    binary: wpssh-mcp
+    ldflags: >-
+      -s -w
+      -X main.version={{ .Tag }}
+    env:
+      - CGO_ENABLED=0
+    targets:
+      - linux_amd64
+      - linux_arm64
+      - darwin_amd64
+      - darwin_arm64
   - id: wpgo
     main: ./cmd/wpgo
     binary: wpgo
@@ -24,6 +37,7 @@ builds:
 
 archives:
   - builds:
+      - wpssh-mcp
       - wpgo
     format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -38,7 +52,8 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     folder: Formula
     homepage: "https://github.com/builtbyrobben/wpssh"
-    description: "WordPress management over SSH"
+    description: "HTTPS MCP server for WordPress management over SSH"
     license: "MIT"
     test: |
+      system "#{bin}/wpssh-mcp", "--version"
       system "#{bin}/wpgo", "--version"

@@ -1,0 +1,9 @@
+.git
+.tools
+bin
+dist
+.scratch
+evidence
+*.env
+**/*.key
+**/id_*

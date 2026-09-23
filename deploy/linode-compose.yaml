@@ -1,0 +1,45 @@
+name: wpssh-mcp
+
+services:
+  server:
+    image: wpssh-mcp:local
+    build:
+      context: ..
+      dockerfile: Dockerfile.mcp
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 512m
+    stop_grace_period: 25s
+    environment:
+      HOME: /home/wpssh
+      WPSMCP_LISTEN_ADDR: 0.0.0.0:8080
+      WPSMCP_BEHIND_PROXY: "1"
+      WPSMCP_TOKEN_FILE: /run/secrets/token
+    volumes:
+      - /home/jdjb78/.ssh:/home/wpssh/.ssh:ro
+      - /home/jdjb78/deploy/wpssh-mcp/config:/home/wpssh/.config/wpgo:ro
+    secrets: [token]
+    networks: [ingress]
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik_network
+      traefik.http.routers.wpssh-mcp.rule: Host(`mcp-google.builtbyrobben.com`) && Path(`/wpssh/mcp`)
+      traefik.http.routers.wpssh-mcp.entrypoints: websecure
+      traefik.http.routers.wpssh-mcp.tls: "true"
+      traefik.http.routers.wpssh-mcp.tls.certresolver: mytlschallenge
+      traefik.http.routers.wpssh-mcp.middlewares: wpssh-mcp-strip
+      traefik.http.middlewares.wpssh-mcp-strip.stripprefix.prefixes: /wpssh
+      traefik.http.services.wpssh-mcp.loadbalancer.server.port: "8080"
+
+networks:
+  ingress:
+    external: true
+    name: traefik_network
+
+secrets:
+  token:
+    file: /home/jdjb78/deploy/wpssh-mcp/secrets/token

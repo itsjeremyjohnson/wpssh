@@ -1,8 +1,37 @@
-# wpssh (wpgo)
+# wpssh
 
-A CLI tool for managing WordPress sites over SSH built with Go. Run WP-CLI commands, manage plugins, themes, databases, and more across multiple WordPress sites from a single interface.
+An HTTPS MCP server for managing WordPress sites over SSH. It exposes a fixed set of WordPress tools through the Model Context Protocol's stateless Streamable HTTP transport. The existing `wpgo` CLI remains available while its broader command set is migrated.
 
-## Installation
+## MCP server
+
+Build `bin/wpssh-mcp` with `make build`, or install it with `make install`. The server reads the service account's `~/.ssh/config`, `~/.ssh/known_hosts`, and optional `~/.config/wpgo/config.json` and `sites.json`. Add each target host's verified SSH host key to `known_hosts` before starting the server. The service account must have the SSH key and network access needed for those sites.
+
+Set `WPSMCP_TOKEN` to a random secret of at least 32 characters outside the repository. The MCP endpoint is `/mcp` and requires `Authorization: Bearer <token>` on every request. Configure the MCP client with the HTTPS URL and token.
+
+For containers, set `WPSMCP_TOKEN_FILE` to a mounted secret file. It takes precedence over `WPSMCP_TOKEN`.
+
+By default the server listens on `127.0.0.1:8080`. Terminate HTTPS on the same VPS with a reverse proxy, forwarding `/mcp` to that listener and preserving the original `Host` header. For example, a Caddy site can use `reverse_proxy 127.0.0.1:8080`. Alternatively, set both `WPSMCP_TLS_CERT_FILE` and `WPSMCP_TLS_KEY_FILE`, plus a public `WPSMCP_LISTEN_ADDR`, to serve HTTPS directly. A non-loopback listener requires direct TLS or the explicit proxy setting below.
+
+For a container connected only to a private reverse-proxy network, set `WPSMCP_BEHIND_PROXY=1` and `WPSMCP_LISTEN_ADDR=0.0.0.0:8080`. Do not publish the container port. The proxy must terminate HTTPS before forwarding requests.
+
+The Linode Compose deployment is in `deploy/linode-compose.yaml`. It serves `https://mcp-google.builtbyrobben.com/wpssh/mcp` through the existing Traefik listener. Its `config` bind mount supplies WordPress paths from `sites.json`; keep that file and the token outside the source tree on the VPS. The Traefik route strips `/wpssh` before passing the request to the server's `/mcp` handler.
+
+The default catalog is read-only: `list_sites`, `list_plugins`, `list_themes`, `list_users`, `list_posts`, `core_version`, and `get_option`. Set `WPSMCP_ALLOW_WRITES=1` to also expose `activate_plugin`, `deactivate_plugin`, `update_plugin`, and `update_option`. Each site-specific call requires a `site` alias. No tool accepts raw shell commands or PHP code. Tool results are fresh WP-CLI output; the MCP server does not use the CLI's SQLite cache.
+
+| Variable | Purpose |
+|----------|---------|
+| `WPSMCP_TOKEN` | Bearer token of at least 32 characters when no token file is set |
+| `WPSMCP_TOKEN_FILE` | Path to a bearer-token secret file; overrides `WPSMCP_TOKEN` |
+| `WPSMCP_LISTEN_ADDR` | Listener address, default `127.0.0.1:8080` |
+| `WPSMCP_TLS_CERT_FILE`, `WPSMCP_TLS_KEY_FILE` | Optional pair for direct HTTPS |
+| `WPSMCP_ALLOW_WRITES` | Set to `1` to expose the four write tools |
+| `WPSMCP_BEHIND_PROXY` | Permit plain HTTP on a non-loopback listener behind an HTTPS reverse proxy |
+
+`wpssh-mcp --version` prints the build version without starting the server.
+
+## Legacy CLI
+
+### Installation
 
 ### Homebrew (macOS/Linux)
 
@@ -20,7 +49,7 @@ Download the latest release from [GitHub Releases](https://github.com/builtbyrob
 ```bash
 git clone https://github.com/builtbyrobben/wpssh.git
 cd wpssh
-make build
+make build-cli
 ```
 
 ## Configuration
