@@ -27,6 +27,10 @@ type Adapter interface {
 	// stdout as it arrives; the returned ExecResult has an empty Stdout.
 	ExecStream(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string, stdout io.Writer) (internalssh.ExecResult, error)
 
+	// ExecWithStdin runs a wp-cli command like Exec with stdin as the remote
+	// command's standard input.
+	ExecWithStdin(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string, stdin io.Reader) (internalssh.ExecResult, error)
+
 	// Upload transfers a local file to the remote host.
 	Upload(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, localPath, remotePath string) error
 
