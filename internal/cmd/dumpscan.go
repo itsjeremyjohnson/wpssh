@@ -1275,12 +1275,17 @@ func (c *stmtCheck) checkTail(t sqlToken) error {
 			return errors.New("generated column expressions are not supported by this dump check")
 		}
 		if c.defaultTail {
-			if t.kind == 'p' && (t.text == "," || t.text == ")") {
-				c.defaultTail = false
-			} else if t.kind == 'p' && strings.ContainsAny(t.text, "+-*/%|&^=<>!") ||
-				t.is("OR") || t.is("AND") || t.is("XOR") || t.is("DIV") || t.is("MOD") || t.is("IN") || t.is("IS") || t.is("LIKE") || t.is("REGEXP") || t.is("BETWEEN") {
-				return errors.New("DEFAULT expressions must be literal: operators may invoke server functions")
+			// After a literal, only a column attribute or the end of the
+			// column may follow. An operator allowlist misses aliases such
+			// as RLIKE, which can evaluate a server function in MariaDB.
+			allowed := t.kind == 'p' && (t.text == "," || t.text == ")" || t.text == "(" && c.tailWord == "CURRENT_TIMESTAMP")
+			for _, attr := range []string{"ON", "NOT", "NULL", "AUTO_INCREMENT", "UNIQUE", "PRIMARY", "COMMENT", "COLLATE", "COLUMN_FORMAT", "STORAGE", "REFERENCES", "CHECK", "INVISIBLE", "VISIBLE"} {
+				allowed = allowed || t.is(attr)
 			}
+			if !allowed {
+				return errors.New("DEFAULT expressions must be literal: only column attributes may follow a default")
+			}
+			c.defaultTail = false
 		}
 		if c.defaultValue {
 			c.defaultValue = false
