@@ -27,7 +27,7 @@ type CLI struct {
 	Role        RoleCmd          `cmd:"" help:"Role management"`
 	Maintenance MaintenanceCmd   `cmd:"" help:"Maintenance mode management"`
 	Eval        EvalCmd          `cmd:"" help:"Execute arbitrary PHP. It can write files on the server; take backups and exports with 'wpgo db export'."`
-	Raw         RawCmd           `cmd:"" help:"Pass-through to wp-cli"`
+	Raw         RawCmd           `cmd:"" help:"Pass-through to wp-cli. Refuses server-side dumps and exports, db cli, --exec/--require and shell syntax outside quotes; eval and eval-file PHP is not checked."`
 
 	// Shortcut commands
 	Health     HealthCmd     `cmd:"" help:"Full site health check"`

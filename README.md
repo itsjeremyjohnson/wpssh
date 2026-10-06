@@ -293,15 +293,22 @@ wpgo -s mysite eval "echo get_option('siteurl');"
 
 ```bash
 wpgo -s mysite raw -- option list
-wpgo -s mysite raw -- post meta update 7 title "Today's Dental"
+wpgo -s mysite raw -- post meta update 7 title "'Spring cleaning tips'"
 ```
 
-Put wp-cli arguments after `--`. Each argument reaches wp as one quoted word, so the server shell does no expansion, redirection or chaining. `raw` refuses, before connecting, any command that would leave a dump or export on the server:
+Put wp-cli arguments after `--`. `raw` joins them with spaces and the server shell parses that line, so quote any argument that holds spaces or shell characters, in single quotes. Before connecting, `raw` refuses:
 
-- `db export` (or `db dump`) with a file argument other than `-`, with no file argument, or with a flag outside a short mysqldump allowlist (blocks `--result-file`, `--tab` and their prefixes). Use `wpgo db export`.
-- `export` (the WXR exporter).
-- `search-replace` or `db search-replace` with any `--export` flag.
-- `db query` whose SQL contains `OUTFILE` or `DUMPFILE` in any case. `wpgo db query` applies the same check.
+- shell syntax outside single quotes: `;`, `&`, `|`, `<`, `>`, a newline, `(`, `)`, `{`, `}`, a leading `#`, `$` or a backtick (also inside double quotes), a line continuation, or an unbalanced quote;
+- `db export` (or `db dump`) with a file argument other than `-`, with no file argument, with a flag outside a short mysqldump allowlist (blocks `--result-file`, `--tab`, their prefixes and `--defaults`), or with a `--tables` or `--exclude_tables` entry that starts with `-`. Use `wpgo db export`;
+- `export` (the WXR exporter);
+- `search-replace` or `db search-replace` with any `--export` flag;
+- `db query` whose SQL contains `OUTFILE` or `DUMPFILE` in any case. `wpgo db query` applies the same check;
+- `db cli` and `db connect`;
+- the `--exec` and `--require` globals.
+
+`sql` counts as `db`, and any run of `--` delimiters is skipped. On WP Engine, whose gateway parses each word a second time, `raw` checks that second layer too.
+
+`eval` and `eval-file` are the one exception: `raw` checks only their shell syntax, never their PHP, and allows `--exec` and `--require` with them. PHP can write files on the server, so take backups and exports with `wpgo db export`, never with `eval`.
 
 ### Shortcut Commands
 
