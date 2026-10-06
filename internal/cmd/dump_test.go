@@ -9,12 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	internalssh "github.com/builtbyrobben/wpssh/internal/ssh"
-	"github.com/builtbyrobben/wpssh/internal/wpcli"
 )
 
 const completeDump = "CREATE TABLE wp_posts (ID int);\n-- Dump completed on 2026-10-06 12:00:00\n"
@@ -27,8 +27,6 @@ if [ "$3" != "-" ]; then printf 'dump\n' > "$3"; exit 0; fi
 case "$STUB_MODE" in
 ok) printf '%s' "$STUB_DUMP" ;;
 fail) printf 'CREATE TABLE wp_po'; echo 'mysqldump: Lost connection' >&2; exit 3 ;;
-empty) ;;
-truncated) printf 'CREATE TABLE wp_posts (ID int);\nINSERT INTO wp_po' ;;
 esac
 `
 
@@ -47,7 +45,8 @@ func remoteShells(t *testing.T) []string {
 
 // fakeRemote sets up a temp "server" HOME with a WordPress path and stub wp,
 // and returns a run func that executes the real remote export command there.
-func fakeRemote(t *testing.T, shell, mode string) (home string, run func(io.Writer) (internalssh.ExecResult, error)) {
+// In mode "ok" the stub prints dump.
+func fakeRemote(t *testing.T, shell, mode, dump string) (home string, run func(io.Writer) (internalssh.ExecResult, error)) {
 	t.Helper()
 	home = t.TempDir()
 	wpPath := filepath.Join(home, "public_html", "my site")
@@ -59,8 +58,8 @@ func fakeRemote(t *testing.T, shell, mode string) (home string, run func(io.Writ
 		t.Fatal(err)
 	}
 	return home, func(w io.Writer) (internalssh.ExecResult, error) {
-		cmd := exec.Command(shell, "-c", wpcli.DBExport(wpPath, "-", ""))
-		cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":" + os.Getenv("PATH"), "STUB_MODE=" + mode, "STUB_DUMP=" + completeDump}
+		cmd := exec.Command(shell, "-c", dbExportStdout(wpPath))
+		cmd.Env = []string{"HOME=" + home, "PATH=" + bin + ":" + os.Getenv("PATH"), "STUB_MODE=" + mode, "STUB_DUMP=" + dump}
 		var stderr bytes.Buffer
 		cmd.Stdout = w
 		cmd.Stderr = &stderr
@@ -74,7 +73,7 @@ func fakeRemote(t *testing.T, shell, mode string) (home string, run func(io.Writ
 }
 
 func TestDefaultDumpPath(t *testing.T) {
-	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 10, 6, 12, 0, 0, 123_000_000, time.UTC)
 
 	t.Run("home default", func(t *testing.T) {
 		home := t.TempDir()
@@ -84,12 +83,28 @@ func TestDefaultDumpPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := filepath.Join(home, "wpgo-backups", "my_site", "my_site_DB_pre_update_20261006_120000.sql")
-		if got != want {
-			t.Fatalf("path = %s, want %s", got, want)
+		dir := filepath.Join(home, "wpgo-backups", "my_site")
+		want := regexp.MustCompile(`^my_site_DB_pre_update_20261006_120000_123_[0-9a-f]{6}\.sql$`)
+		if filepath.Dir(got) != dir || !want.MatchString(filepath.Base(got)) {
+			t.Fatalf("path = %s, want %s/%s", got, dir, want)
 		}
 		assertPerm(t, filepath.Join(home, "wpgo-backups"), 0o700)
-		assertPerm(t, filepath.Join(home, "wpgo-backups", "my_site"), 0o700)
+		assertPerm(t, dir, 0o700)
+	})
+
+	t.Run("same millisecond gets distinct names", func(t *testing.T) {
+		t.Setenv("WPGO_LOCAL_BACKUP_DIR", t.TempDir())
+		a, err := defaultDumpPath("acme", "export", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := defaultDumpPath("acme", "export", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a == b {
+			t.Fatalf("two backups at the same instant both named %s", a)
+		}
 	})
 
 	t.Run("env override tightens existing dir", func(t *testing.T) {
@@ -102,8 +117,8 @@ func TestDefaultDumpPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := filepath.Join(base, "acme", "acme_DB_export_20261006_120000.sql"); got != want {
-			t.Fatalf("path = %s, want %s", got, want)
+		if want := filepath.Join(base, "acme"); filepath.Dir(got) != want {
+			t.Fatalf("path = %s, want it in %s", got, want)
 		}
 		assertPerm(t, base, 0o700)
 	})
@@ -112,60 +127,95 @@ func TestDefaultDumpPath(t *testing.T) {
 // TestSaveDumpStreamsToOperator runs the default export command against a
 // local stand-in for the server and checks the dump lands only locally.
 func TestSaveDumpStreamsToOperator(t *testing.T) {
-	sum := sha256.Sum256([]byte(completeDump))
-	wantSHA := hex.EncodeToString(sum[:])
-
+	dumps := map[string]string{
+		"lf":                   completeDump,
+		"crlf":                 "CREATE TABLE wp_posts (ID int);\r\n-- Dump completed on 2026-10-06 12:00:00\r\n",
+		"trailing blank lines": completeDump + "\n \n\t\n",
+	}
 	for _, shell := range remoteShells(t) {
-		t.Run(shell, func(t *testing.T) {
-			serverHome, run := fakeRemote(t, shell, "ok")
-			path := filepath.Join(t.TempDir(), "site_DB_export.sql")
+		for name, dump := range dumps {
+			t.Run(shell+"/"+name, func(t *testing.T) {
+				sum := sha256.Sum256([]byte(dump))
+				wantSHA := hex.EncodeToString(sum[:])
+				serverHome, run := fakeRemote(t, shell, "ok", dump)
+				path := filepath.Join(t.TempDir(), "site_DB_export.sql")
 
-			got, err := saveDump(path, run)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Path != path || got.Bytes != int64(len(completeDump)) || got.SHA256 != wantSHA {
-				t.Errorf("saveDump = %+v, want path %s, %d bytes, sha %s", got, path, len(completeDump), wantSHA)
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(data) != completeDump {
-				t.Errorf("local dump = %q, want %q", data, completeDump)
-			}
-			assertPerm(t, path, 0o600)
-			if left := listFiles(t, filepath.Dir(path)); len(left) != 1 {
-				t.Errorf("local dir has %v, want only the dump", left)
-			}
-			if remote := listFiles(t, serverHome); len(remote) != 0 {
-				t.Errorf("server has files %v, want none", remote)
-			}
-		})
+				got, err := saveDump(path, run)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Path != path || got.Bytes != int64(len(dump)) || got.SHA256 != wantSHA {
+					t.Errorf("saveDump = %+v, want path %s, %d bytes, sha %s", got, path, len(dump), wantSHA)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) != dump {
+					t.Errorf("local dump = %q, want %q", data, dump)
+				}
+				assertPerm(t, path, 0o600)
+				if left := listFiles(t, filepath.Dir(path)); len(left) != 1 {
+					t.Errorf("local dir has %v, want only the dump", left)
+				}
+				if remote := listFiles(t, serverHome); len(remote) != 0 {
+					t.Errorf("server has files %v, want none", remote)
+				}
+
+				var out bytes.Buffer
+				if err := writeDump(&out, run); err != nil {
+					t.Fatalf("stdout export: %v", err)
+				}
+				if out.String() != dump {
+					t.Errorf("stdout export = %q, want %q", out.String(), dump)
+				}
+			})
+		}
 	}
 }
 
-func TestSaveDumpFailureLeavesNoFile(t *testing.T) {
+// TestDumpFailures checks that file exports leave no file and stdout exports
+// return an error for each way a dump can be incomplete.
+func TestDumpFailures(t *testing.T) {
 	tests := []struct {
+		name    string
 		mode    string
+		dump    string
 		wantErr string
 	}{
-		{mode: "fail", wantErr: "wp db export exited 3: mysqldump: Lost connection"},
-		{mode: "empty", wantErr: "empty dump"},
-		{mode: "truncated", wantErr: "dump is truncated"},
+		{name: "remote exit", mode: "fail", wantErr: "wp db export exited 3: mysqldump: Lost connection"},
+		{name: "empty", mode: "ok", dump: "", wantErr: "empty dump"},
+		{name: "truncated", mode: "ok", dump: "CREATE TABLE wp_posts (ID int);\nINSERT INTO wp_po", wantErr: "dump is truncated"},
+		{
+			name:    "trailer inside data",
+			mode:    "ok",
+			dump:    "INSERT INTO wp_posts VALUES (1,'-- Dump completed on 2026-10-06');\nINSERT INTO wp_posts VALUES (2,'cut",
+			wantErr: "dump is truncated",
+		},
+		{
+			// The kept tail starts at a marker in the middle of a long line.
+			name:    "trailer inside a final line longer than the tail",
+			mode:    "ok",
+			dump:    "INSERT INTO wp_posts VALUES ('" + dumpTrailer + strings.Repeat("y", dumpTailSize-len(dumpTrailer)),
+			wantErr: "dump is truncated",
+		},
 	}
 	for _, shell := range remoteShells(t) {
 		for _, tt := range tests {
-			t.Run(shell+"/"+tt.mode, func(t *testing.T) {
-				_, run := fakeRemote(t, shell, tt.mode)
+			t.Run(shell+"/"+tt.name, func(t *testing.T) {
+				_, run := fakeRemote(t, shell, tt.mode, tt.dump)
 				dir := t.TempDir()
 
 				_, err := saveDump(filepath.Join(dir, "x.sql"), run)
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+					t.Fatalf("file export err = %v, want %q", err, tt.wantErr)
 				}
 				if left := listFiles(t, dir); len(left) != 0 {
 					t.Errorf("failed export left %v", left)
+				}
+
+				if err := writeDump(io.Discard, run); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("stdout export err = %v, want %q", err, tt.wantErr)
 				}
 			})
 		}
@@ -173,15 +223,19 @@ func TestSaveDumpFailureLeavesNoFile(t *testing.T) {
 
 	t.Run("transport error mid-stream", func(t *testing.T) {
 		dir := t.TempDir()
-		_, err := saveDump(filepath.Join(dir, "x.sql"), func(w io.Writer) (internalssh.ExecResult, error) {
+		run := func(w io.Writer) (internalssh.ExecResult, error) {
 			_, _ = io.WriteString(w, "CREATE TABLE wp_po")
 			return internalssh.ExecResult{}, errors.New("connection reset")
-		})
+		}
+		_, err := saveDump(filepath.Join(dir, "x.sql"), run)
 		if err == nil || !strings.Contains(err.Error(), "connection reset") {
 			t.Fatalf("err = %v, want connection reset", err)
 		}
 		if left := listFiles(t, dir); len(left) != 0 {
 			t.Errorf("failed export left %v", left)
+		}
+		if err := writeDump(io.Discard, run); err == nil || !strings.Contains(err.Error(), "connection reset") {
+			t.Fatalf("stdout export err = %v, want connection reset", err)
 		}
 	})
 }
@@ -191,12 +245,37 @@ func TestSaveDumpRefusesOverwrite(t *testing.T) {
 	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, run := fakeRemote(t, "sh", "ok")
+	_, run := fakeRemote(t, "sh", "ok", completeDump)
 	if _, err := saveDump(path, run); err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("err = %v, want refusal", err)
 	}
 	if data, _ := os.ReadFile(path); string(data) != "keep" {
 		t.Errorf("existing file changed to %q", data)
+	}
+}
+
+// TestSaveDumpKeepsFileCreatedDuringStream covers a destination that appears
+// after the up-front existence check, e.g. a concurrent backup.
+func TestSaveDumpKeepsFileCreatedDuringStream(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.sql")
+	_, err := saveDump(path, func(w io.Writer) (internalssh.ExecResult, error) {
+		half := len(completeDump) / 2
+		_, _ = io.WriteString(w, completeDump[:half])
+		if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.WriteString(w, completeDump[half:])
+		return internalssh.ExecResult{}, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("err = %v, want refusal", err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "keep" {
+		t.Errorf("existing file changed to %q", data)
+	}
+	if left := listFiles(t, dir); len(left) != 1 {
+		t.Errorf("dir has %v, want only the pre-existing file", left)
 	}
 }
 

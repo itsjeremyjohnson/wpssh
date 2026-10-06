@@ -25,18 +25,13 @@ func (c *HealthCmd) Run(g *Globals) error {
 	})
 }
 
-// BackupCmd creates a named database backup. By default it streams the dump
-// to this machine; with --remote it runs the embedded full-backup.sh on the
-// server.
+// BackupCmd creates a named database backup by streaming the dump to this
+// machine. Nothing is written on the server.
 type BackupCmd struct {
 	Description string `arg:"" optional:"" help:"Backup description" default:"Manual"`
-	Remote      bool   `env:"-" help:"Write the backup on the server under $WPGO_BACKUP_DIR (default ~/backups/wpgo) instead of this machine. You must then move it off the server and delete it."`
 }
 
 func (c *BackupCmd) Run(g *Globals) error {
-	if c.Remote {
-		return c.runRemote(g)
-	}
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err
@@ -55,30 +50,6 @@ func (c *BackupCmd) Run(g *Globals) error {
 		return fmt.Errorf("backup failed: %w", err)
 	}
 	return printDump(rc, "Backup saved:", dump)
-}
-
-func (c *BackupCmd) runRemote(g *Globals) error {
-	return runScript(g, scripts.ScriptFullBackup, []string{g.Site, c.Description}, func(output string, globals *Globals) error {
-		var result struct {
-			Status   string `json:"status"`
-			Filename string `json:"filename"`
-			Path     string `json:"path"`
-			Size     string `json:"size"`
-			Error    string `json:"error"`
-		}
-		parseErr := json.Unmarshal([]byte(output), &result)
-		if globals.JSON || parseErr != nil {
-			fmt.Println(output)
-		} else if result.Status == "ok" {
-			fmt.Printf("Backup created: %s\n", result.Filename)
-			fmt.Printf("Path:           %s\n", result.Path)
-			fmt.Printf("Size:           %s\n", result.Size)
-		}
-		if parseErr == nil && result.Status != "ok" {
-			return fmt.Errorf("backup failed: %s", result.Error)
-		}
-		return nil
-	})
 }
 
 // StatusCmd shows a quick site status (from cache or live).
@@ -240,6 +211,12 @@ func runScript(g *Globals, scriptName string, args []string, format func(string,
 	// Extract JSON from output (wp-cli may prepend warnings).
 	output := extractJSON(result.Stdout)
 
+	if result.ExitCode != 0 {
+		if output != "" {
+			fmt.Println(output)
+		}
+		return fmt.Errorf("%s exited %d: %s", scriptName, result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
 	return format(output, g)
 }
 

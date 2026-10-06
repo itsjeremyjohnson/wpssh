@@ -171,9 +171,9 @@ wpgo -s mysite core verify-checksums
 ### db -- Database operations
 
 ```bash
-wpgo -s mysite db export                 # this machine: ~/wpgo-backups/mysite/mysite_DB_export_<timestamp>.sql
+wpgo -s mysite db export                 # this machine: ~/wpgo-backups/mysite/mysite_DB_export_<timestamp>_<random>.sql
 wpgo -s mysite db export pre-update.sql  # this machine: ./pre-update.sql
-wpgo -s mysite db export - > dump.sql    # stream to stdout
+(umask 077 && wpgo -s mysite db export - > dump.sql)  # stdout; see below
 wpgo -s mysite db import dump.sql
 wpgo -s mysite db query "SELECT COUNT(*) FROM wp_posts"
 wpgo -s mysite db size
@@ -182,14 +182,12 @@ wpgo -s mysite db optimize
 wpgo -s mysite db repair
 ```
 
-`db export` and `backup` run `wp db export -` on the server and stream the dump over SSH to the machine running wpgo. Nothing is written on the server. The default destination is `${WPGO_LOCAL_BACKUP_DIR:-~/wpgo-backups}/<site>/` (dir 0700, file 0600). wpgo writes to a temp file, fsyncs and renames it, and prints the path, byte size and sha256. If the remote export fails or the dump is empty or lacks mysqldump's `-- Dump completed` trailer, wpgo deletes the partial file and exits non-zero. It never overwrites an existing file.
+`db export` and `backup` run `wp db export -` on the server and stream the dump over SSH to the machine running wpgo. Nothing is written on the server, and wpgo has no option to write one there. The default destination is `${WPGO_LOCAL_BACKUP_DIR:-~/wpgo-backups}/<site>/<site>_DB_<desc>_<timestamp>_<ms>_<random>.sql` (dir 0700, file 0600). wpgo writes to a temp file, fsyncs it and links it into place, then prints the path, byte size and sha256. It never replaces an existing file, including one created while the dump was streaming. If the remote export exits non-zero, the dump is empty, or its last non-empty line does not start with mysqldump's `-- Dump completed`, wpgo deletes the partial file and exits non-zero.
 
-`--remote` writes the dump on the server instead, under `${WPGO_BACKUP_DIR:-~/backups/wpgo}` (dir 0700, file 0600), and refuses any target inside the WordPress path, `~/public_html` or `~/www`. Use it only when a local stream is not possible, then move the file off the server and delete it there.
+`db export -` applies the same checks and exits non-zero on failure, but it cannot take back bytes already written to stdout, so check the exit status before using the output. Redirect it under `umask 077` so the dump is not world-readable:
 
 ```bash
-wpgo -s mysite db export --remote                 # server: ~/backups/wpgo/mysite_DB_<timestamp>.sql
-wpgo -s mysite db export --remote pre-update.sql  # server: ~/backups/wpgo/pre-update.sql
-wpgo -s mysite backup --remote "Pre-update"       # server: ~/backups/wpgo/ via full-backup.sh
+(umask 077 && wpgo -s mysite db export - > dump.sql) || rm -f dump.sql
 ```
 
 ### user -- User management

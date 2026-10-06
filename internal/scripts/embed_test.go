@@ -21,19 +21,6 @@ func TestGetScript_HealthCheck(t *testing.T) {
 	}
 }
 
-func TestGetScript_FullBackup(t *testing.T) {
-	s, err := GetScript(ScriptFullBackup)
-	if err != nil {
-		t.Fatalf("GetScript(%s): %v", ScriptFullBackup, err)
-	}
-	if !strings.Contains(s, "wp db export") {
-		t.Error("full-backup.sh should contain 'wp db export'")
-	}
-	if !strings.Contains(s, "FILENAME") {
-		t.Error("full-backup.sh should build a filename")
-	}
-}
-
 func TestGetScript_CacheClear(t *testing.T) {
 	s, err := GetScript(ScriptCacheClear)
 	if err != nil {
@@ -89,7 +76,6 @@ func TestMustGetScript_Success(t *testing.T) {
 func TestAllScriptsOutputJSON(t *testing.T) {
 	scriptNames := []string{
 		ScriptHealthCheck,
-		ScriptFullBackup,
 		ScriptCacheClear,
 		ScriptSecurityAudit,
 	}

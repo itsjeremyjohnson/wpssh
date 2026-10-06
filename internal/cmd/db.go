@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/builtbyrobben/wpssh/internal/cache"
-	"github.com/builtbyrobben/wpssh/internal/registry"
 	"github.com/builtbyrobben/wpssh/internal/wpcli"
 )
 
@@ -27,8 +26,7 @@ type DBCmd struct {
 }
 
 type DBExportCmd struct {
-	File   string `arg:"" optional:"" help:"Local file on this machine (default $WPGO_LOCAL_BACKUP_DIR/<site>/, else ~/wpgo-backups/<site>/); '-' streams to stdout. With --remote: a file on the server."`
-	Remote bool   `env:"-" help:"Write the dump on the server under $WPGO_BACKUP_DIR (default ~/backups/wpgo) instead of this machine. You must then move it off the server and delete it."`
+	File string `arg:"" optional:"" help:"Local file on this machine (default $WPGO_LOCAL_BACKUP_DIR/<site>/, else ~/wpgo-backups/<site>/); '-' streams to stdout. Nothing is written on the server."`
 }
 type DBImportCmd struct {
 	File string `arg:"" help:"Import file path"`
@@ -60,18 +58,8 @@ func (c *DBExportCmd) Run(g *Globals) error {
 		return err
 	}
 
-	switch {
-	case c.Remote:
-		return c.runRemote(rc, site)
-	case c.File == "-":
-		result, err := rc.ExecWPStream(context.Background(), site, wpcli.DBExport(site.WPPath, "-", ""), rc.Stdout)
-		if err != nil {
-			return err
-		}
-		if result.ExitCode != 0 {
-			return fmt.Errorf("wp db export: %s", result.Stderr)
-		}
-		return nil
+	if c.File == "-" {
+		return exportToStdout(rc, site)
 	}
 
 	path := c.File
@@ -85,23 +73,6 @@ func (c *DBExportCmd) Run(g *Globals) error {
 		return err
 	}
 	return printDump(rc, "Exported to:", dump)
-}
-
-// runRemote writes the dump on the server, outside the web root.
-func (c *DBExportCmd) runRemote(rc *RunContext, site *registry.Site) error {
-	defaultName := fmt.Sprintf("%s_DB_%s.sql", unsafeFilenameChars.ReplaceAllString(site.Alias, "_"), time.Now().Format("20060102_150405"))
-	result, err := rc.ExecWP(context.Background(), site, wpcli.DBExport(site.WPPath, c.File, defaultName))
-	if err != nil {
-		return err
-	}
-	if result.ExitCode == wpcli.WebrootRefusedExit {
-		return fmt.Errorf("db export refused (exit %d): %s", result.ExitCode, result.Stderr)
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("wp db export: %s", result.Stderr)
-	}
-	fmt.Fprint(rc.Stdout, result.Stdout)
-	return nil
 }
 
 func (c *DBImportCmd) Run(g *Globals) error {
