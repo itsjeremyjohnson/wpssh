@@ -70,8 +70,10 @@ func TestRestoreBacksUpBeforeImport(t *testing.T) {
 	if want := []string{"database", "backup " + req.BackupPath, "import"}; !reflect.DeepEqual(site.calls, want) {
 		t.Fatalf("calls = %q, want %q", site.calls, want)
 	}
-	if string(site.imported) != goodDump {
-		t.Fatalf("imported %q, want the dump unchanged", site.imported)
+	// The preamble sets the session state scanDump assumes before any dump
+	// byte reaches the client.
+	if want := "SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO';\nSET NAMES utf8mb4;\n" + goodDump; string(site.imported) != want {
+		t.Fatalf("imported %q, want %q", site.imported, want)
 	}
 	if !res.Imported || res.Output != "Success: Imported from 'STDIN'.\n" || res.Backup.Path != req.BackupPath {
 		t.Fatalf("result = %+v", res)
@@ -167,6 +169,13 @@ func TestDBImportRefusesServerPaths(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestDBImportCommandSetsClientCharset(t *testing.T) {
+	want := "cd '/var/www/acme' && wp db import '-' --default-character-set='utf8mb4'"
+	if got := dbImportStdin("/var/www/acme"); got != want {
+		t.Fatalf("command = %q, want %q", got, want)
 	}
 }
 

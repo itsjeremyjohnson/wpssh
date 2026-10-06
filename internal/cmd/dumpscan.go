@@ -14,24 +14,38 @@ import (
 // mariadb-dump and `wp db export` write. database is the database the import
 // writes to. Memory use does not grow with the dump's size or line length.
 //
-// The scanner reads the input the way the mysql client does: ', " and `
-// quotes with backslash escapes, # and "-- " comments, lines starting with #
-// or --, /* */ comments, and /*!NNNNN */, /*M!NNNNNN */ and /*+ */ comments,
-// whose contents the client and server treat as SQL. It refuses:
+// The scanner reads the input the way the mysql and mariadb clients do: '
+// and " quotes with backslash escapes, ` quotes without them, # and "-- "
+// comments, lines starting with # or "-- ", /* */ comments, and /*!NNNNN */
+// and /*M!NNNNNN */ comments, whose contents the client and server treat as
+// SQL. It assumes the session state importPreamble sets: no
+// NO_BACKSLASH_ESCAPES or ANSI_QUOTES, and a character set in which a
+// backslash byte is always a backslash. It refuses:
 //
 //   - a backslash outside quotes and comments, which the client reads as a
 //     one-letter command (\! runs a shell command, \. runs a file, \r and \u
 //     switch database, \T writes a file, \C changes how later bytes are read).
 //     The one exception is \- , MariaDB's switch that turns client commands
 //     off, which mariadb-dump writes on its first line;
+//   - a backslash inside ` quotes, which dumps never contain;
+//   - /*+ */ optimizer hints, inside which neither client reads quotes;
+//   - inside /*! */ and /*M! */, a comment, a delimiter, or a quote that runs
+//     past the closing */. A server older than the comment's version skips it
+//     without reading quotes, so it must end where the client thinks it does;
+//   - := outside quotes, which assigns a user variable;
 //   - a line whose first word is one of clientLineCommands, or use naming a
 //     database other than the target;
 //   - a statement that checkHead does not allow. Its allowlist also excludes
 //     every other long-form client command (quit, prompt, ...), which the
 //     client recognizes at the start of a statement;
-//   - a SET that could turn on NO_BACKSLASH_ESCAPES or switch to a character
-//     set in which a backslash byte can end a character, since either would
-//     make the client end quotes where this scanner does not;
+//   - a SET of sql_mode to anything but a list of modes that leave quoting
+//     alone, a SET of the client character set to one in which a backslash
+//     byte can end a character, and a SET of a user variable to anything but
+//     a system variable. A system variable may be set back from a user
+//     variable only if the user variable was saved from it and nothing else
+//     in the dump, trigger and routine bodies included, mentions it;
+//   - a table or other object name qualified with a database other than the
+//     target;
 //   - OUTFILE or DUMPFILE outside quotes, which write files on the server.
 //
 // DELIMITER at the start of a line between statements is allowed;
@@ -41,7 +55,8 @@ func scanDump(r io.Reader, database string) error {
 		r:     bufio.NewReaderSize(r, 64<<10),
 		delim: []byte(";"),
 		line:  1,
-		stmt:  stmtCheck{database: database},
+		prev:  ' ',
+		stmt:  stmtCheck{database: database, vars: &userVars{saved: map[string]string{}, poisoned: map[string]bool{}}},
 	}
 	if err := s.run(); err != nil {
 		return fmt.Errorf("refusing dump: line %d: %w", s.line, err)
@@ -80,14 +95,20 @@ type dumpScanner struct {
 
 	state scanState
 	quote byte
-	// cond is set inside /*! */, /*M! */ and /*+ */. dead is set inside
+	// cond is set inside /*! */ and /*M! */. dead is set inside
 	// /*M!999999 */, which no server version runs.
 	cond, dead bool
+	// prev is the code byte before the current one, or a space after
+	// whitespace, a comment or a newline.
+	prev byte
 
 	stmt stmtCheck
 	// word is the code word being read, for the OUTFILE check.
 	word     []byte
 	wordLong bool
+	// varName is the name of the user variable being read, after its @.
+	varName        []byte
+	inVar, varLong bool
 }
 
 func (s *dumpScanner) run() error {
@@ -107,6 +128,7 @@ func (s *dumpScanner) run() error {
 			return err
 		}
 		if eof {
+			s.endVar()
 			if err := s.endWord(); err != nil {
 				return err
 			}
@@ -121,8 +143,14 @@ func (s *dumpScanner) run() error {
 // whole line, newline included, when the line is a comment or an allowed
 // client command; otherwise it consumes only leading whitespace.
 func (s *dumpScanner) lineStart() (consumed, eof bool, err error) {
-	if head, _ := s.r.Peek(2); len(head) > 0 && (head[0] == '#' || bytes.HasPrefix(head, []byte("--"))) {
-		// The client drops a line starting with # or -- whole.
+	// The client drops a line starting with # or "-- " whole. mysql reads a
+	// line starting with -- and then not a space as code, and mariadb drops
+	// it at the start of a statement; read as code, the line cannot start a
+	// statement this scanner allows.
+	if head, _ := s.r.Peek(3); len(head) > 0 && (head[0] == '#' || bytes.HasPrefix(head, []byte("--")) && (len(head) == 2 || isSpace(head[2]))) {
+		if s.cond {
+			return true, false, errCommentInCond
+		}
 		eof, err = s.skipLine()
 		return true, eof, err
 	}
@@ -148,6 +176,9 @@ func (s *dumpScanner) lineStart() (consumed, eof bool, err error) {
 	switch {
 	case word == "use":
 	case word == "delimiter" && n < len(peek) && isLineSpace(peek[n]):
+		if s.cond {
+			return false, false, errors.New("DELIMITER inside a /*! comment")
+		}
 	default:
 		return false, false, nil
 	}
@@ -248,6 +279,8 @@ func (s *dumpScanner) restOfLine() (bool, error) {
 		}
 		if c == '\n' {
 			if s.state == stCode {
+				s.prev = ' '
+				s.endVar()
 				s.stmt.space()
 				return false, s.endWord()
 			}
@@ -256,7 +289,7 @@ func (s *dumpScanner) restOfLine() (bool, error) {
 		switch s.state {
 		case stComment:
 			if c == '*' && s.next('/') {
-				s.state = stCode
+				s.state, s.prev = stCode, ' '
 			}
 		case stQuote:
 			if err := s.quoted(c); err != nil {
@@ -275,7 +308,11 @@ func (s *dumpScanner) restOfLine() (bool, error) {
 // could end the quote or the line.
 func (s *dumpScanner) skipQuoted() {
 	buf, _ := s.r.Peek(s.r.Buffered())
-	n := bytes.IndexAny(buf, string([]byte{s.quote, '\\', '\n'}))
+	stops := []byte{s.quote, '\\', '\n'}
+	if s.cond {
+		stops = append(stops, '*')
+	}
+	n := bytes.IndexAny(buf, string(stops))
 	if n < 0 {
 		n = len(buf)
 	}
@@ -284,8 +321,12 @@ func (s *dumpScanner) skipQuoted() {
 }
 
 func (s *dumpScanner) quoted(c byte) error {
-	switch c {
-	case '\\':
+	switch {
+	case c == '\\' && s.quote == '`':
+		return errors.New("backslash inside a ` quoted name: dumps never contain one, and the client and server do not read it as an escape")
+	case c == '*' && s.cond && s.next('/'):
+		return errors.New("*/ inside a quote within a /*! comment: a server that skips the comment ends it there")
+	case c == '\\':
 		// The client keeps the escaped byte, even a newline, in the quote.
 		e, err := s.r.ReadByte()
 		if errors.Is(err, io.EOF) {
@@ -297,9 +338,12 @@ func (s *dumpScanner) quoted(c byte) error {
 		if e == '\n' {
 			s.line++
 		}
+		if e == '*' && s.cond && s.next('/') {
+			return errors.New("*/ inside a quote within a /*! comment: a server that skips the comment ends it there")
+		}
 		s.stmt.quoteText([]byte{'\\', e})
-	case s.quote:
-		s.state = stCode
+	case c == s.quote:
+		s.state, s.prev = stCode, c
 		s.stmt.endQuote()
 	default:
 		s.stmt.quoteText([]byte{c})
@@ -318,15 +362,39 @@ func (s *dumpScanner) next(c byte) bool {
 
 // code handles one byte other than a newline read in code state.
 func (s *dumpScanner) code(c byte) error {
+	prev := s.prev
+	s.prev = c
 	if !isWordByte(c) {
 		if err := s.endWord(); err != nil {
 			return err
 		}
+		if c != '.' {
+			s.endVar()
+		}
 	}
 	if c == s.delim[0] {
 		if rest, _ := s.r.Peek(len(s.delim) - 1); bytes.Equal(rest, s.delim[1:]) {
+			if s.cond {
+				return errors.New("delimiter inside a /*! comment")
+			}
 			_, _ = s.r.Discard(len(s.delim) - 1)
 			return s.stmt.end()
+		}
+	}
+	if !s.dead {
+		switch {
+		case c == '@':
+			s.startVar(prev)
+		case c == ':':
+			if b, _ := s.r.Peek(1); len(b) > 0 && b[0] == '=' {
+				return errors.New(":= outside quotes assigns a user variable, which dumps do not do")
+			}
+		case s.inVar:
+			if len(s.varName) < 64 {
+				s.varName = append(s.varName, c)
+			} else {
+				s.varLong = true
+			}
 		}
 	}
 	switch {
@@ -340,16 +408,17 @@ func (s *dumpScanner) code(c byte) error {
 		}
 		cmd, _ := s.r.Peek(1)
 		return fmt.Errorf("mysql client command %q outside quotes: client commands are not SQL and run on the server", `\`+string(cmd))
-	case c == '#':
-		s.lineComment()
-		return nil
-	case c == '-' && s.dashComment():
+	case c == '#' || c == '-' && s.dashComment():
+		if s.cond {
+			return errCommentInCond
+		}
 		s.lineComment()
 		return nil
 	case c == '/' && s.next('*'):
+		s.prev = ' '
 		return s.openComment()
 	case c == '*' && s.cond && s.next('/'):
-		s.cond, s.dead = false, false
+		s.cond, s.dead, s.prev = false, false, ' '
 		s.stmt.space()
 		return nil
 	}
@@ -364,6 +433,43 @@ func (s *dumpScanner) code(c byte) error {
 		s.stmt.codeByte(c)
 	}
 	return nil
+}
+
+// errCommentInCond refuses a comment inside /*! */, where a # or -- comment
+// can hide the */ from the client but not from a server that skips the
+// comment.
+var errCommentInCond = errors.New("comment inside a /*! comment")
+
+// startVar handles an @ read in code state after prev. It starts reading a
+// user variable's name, and reports a user variable it cannot name as "".
+func (s *dumpScanner) startVar(prev byte) {
+	if prev == '@' || prev == '\'' || prev == '"' || prev == '`' {
+		// The second @ of @@name, or the host of 'user'@'host'.
+		return
+	}
+	b, _ := s.r.Peek(1)
+	switch {
+	case len(b) > 0 && b[0] == '@':
+	case len(b) > 0 && isWordByte(b[0]):
+		s.inVar, s.varLong, s.varName = true, false, s.varName[:0]
+	default:
+		s.stmt.userVar("")
+	}
+}
+
+// endVar reports the user variable whose name was being read. A name with
+// non-ASCII bytes is reported as "", since mysql may compare it ignoring
+// accents.
+func (s *dumpScanner) endVar() {
+	if !s.inVar {
+		return
+	}
+	s.inVar = false
+	name := ""
+	if !s.varLong && !bytes.ContainsFunc(s.varName, func(r rune) bool { return r >= 0x80 }) {
+		name = "@" + strings.ToUpper(string(s.varName))
+	}
+	s.stmt.userVar(name)
 }
 
 // dashComment reports whether the '-' just read starts a "-- " comment, and
@@ -396,6 +502,9 @@ func (s *dumpScanner) lineComment() {
 // openComment handles the bytes after "/*".
 func (s *dumpScanner) openComment() error {
 	s.stmt.space()
+	if s.cond {
+		return errCommentInCond
+	}
 	b, _ := s.r.Peek(2)
 	switch {
 	case len(b) > 0 && b[0] == '!':
@@ -403,15 +512,10 @@ func (s *dumpScanner) openComment() error {
 	case len(b) > 1 && b[0] == 'M' && b[1] == '!':
 		_, _ = s.r.Discard(2)
 	case len(b) > 0 && b[0] == '+':
-		_, _ = s.r.Discard(1)
-		s.cond = true
-		return nil
+		return errors.New("optimizer hint /*+ */: dumps do not contain hints, and the client and server do not read quotes inside them")
 	default:
 		s.state = stComment
 		return nil
-	}
-	if s.cond {
-		return errors.New("nested /*! comment")
 	}
 	digits, _ := s.r.Peek(6)
 	n := 0
@@ -421,6 +525,8 @@ func (s *dumpScanner) openComment() error {
 	_, _ = s.r.Discard(n)
 	s.cond = true
 	s.dead = string(digits[:n]) == "999999"
+	// The client keeps the comment in the statement it is building.
+	s.stmt.started = s.stmt.started || !s.dead
 	return nil
 }
 
@@ -482,8 +588,33 @@ type stmtCheck struct {
 	cur      []byte
 	curKind  byte
 	err      error
-	// savedModes are user variables last assigned from @@sql_mode.
-	savedModes map[string]bool
+	// vars persists across statements. varRefs are the user variables the
+	// statement mentions, and setVars those checkSet accounted for.
+	vars    *userVars
+	varRefs []string
+	setVars map[string]bool
+}
+
+// userVars tracks which user variables still hold the value of the system
+// variable they were saved from.
+type userVars struct {
+	// saved maps a user variable to the system variable last saved in it.
+	saved map[string]string
+	// poisoned are user variables a statement other than SET @v = @@name
+	// mentions, which a trigger or routine might write later. all poisons
+	// every variable, for a mention this scanner cannot name.
+	poisoned map[string]bool
+	all      bool
+}
+
+func (u *userVars) trusted(name, sysvar string) bool {
+	return !u.all && !u.poisoned[name] && u.saved[name] == sysvar
+}
+
+// userVar records that the statement mentions a user variable; "" stands for
+// one this scanner cannot name.
+func (c *stmtCheck) userVar(name string) {
+	c.varRefs = append(c.varRefs, name)
 }
 
 func (c *stmtCheck) codeByte(b byte) {
@@ -579,7 +710,16 @@ func (c *stmtCheck) end() error {
 			c.refuse(err)
 		}
 	}
-	*c = stmtCheck{database: c.database, savedModes: c.savedModes, tokens: c.tokens[:0], cur: c.cur[:0], err: c.err}
+	for _, name := range c.varRefs {
+		switch {
+		case c.setVars[name]:
+		case name == "":
+			c.vars.all = true
+		default:
+			c.vars.poisoned[name] = true
+		}
+	}
+	*c = stmtCheck{database: c.database, vars: c.vars, tokens: c.tokens[:0], cur: c.cur[:0], varRefs: c.varRefs[:0], err: c.err}
 	return c.err
 }
 
@@ -595,14 +735,26 @@ func (c *stmtCheck) checkHead(final bool) (bool, error) {
 		return false, nil
 	}
 	switch {
-	case t[0].is("INSERT"), t[0].is("REPLACE"), t[0].is("COMMIT"):
+	case t[0].is("COMMIT"):
 		return true, nil
+	case t[0].is("INSERT"), t[0].is("REPLACE"):
+		i := 1
+		for i < len(t) && (t[i].is("LOW_PRIORITY") || t[i].is("DELAYED") || t[i].is("HIGH_PRIORITY") || t[i].is("IGNORE") || t[i].is("INTO")) {
+			i++
+		}
+		return c.checkObjectName(i, final)
 	case t[0].is("LOCK"), t[0].is("UNLOCK"):
 		if len(t) < 2 {
 			return more()
 		}
-		if t[1].is("TABLES") || t[1].is("TABLE") {
+		switch {
+		case !t[1].is("TABLES") && !t[1].is("TABLE"):
+		case t[0].is("UNLOCK"):
 			return true, nil
+		case !final:
+			return false, nil
+		default:
+			return true, c.checkAllNames(t[2:])
 		}
 	case t[0].is("SET"):
 		if !final {
@@ -640,11 +792,23 @@ func (c *stmtCheck) checkDDL(final bool) (bool, error) {
 		if t.kind != 'w' || ddlModifiers[kind] || strings.Contains(kind, "@") {
 			continue
 		}
+		name := i + 2 // index of the token after kind
 		switch {
-		case ddlObjects[kind] && (verb != "ALTER" || kind == "TABLE"):
-			return true, nil
+		case ddlObjects[kind] && verb == "DROP":
+			if !final {
+				return false, nil
+			}
+			return true, c.checkAllNames(c.tokens[name:])
+		case kind == "TABLE" && verb == "ALTER":
+			return c.checkAlterTable(name, final)
+		case ddlObjects[kind] && verb == "CREATE":
+			ok, err := c.checkObjectName(name, final)
+			if !ok || err != nil || kind != "TRIGGER" {
+				return ok, err
+			}
+			return c.checkTriggerTable(name, final)
 		case (kind == "DATABASE" || kind == "SCHEMA") && verb != "DROP":
-			return c.checkDatabaseName(verb, c.tokens[i+2:], final)
+			return c.checkDatabaseName(verb, c.tokens[name:], final)
 		}
 		return false, fmt.Errorf("%s %s is not a statement mysqldump writes", verb, kind)
 	}
@@ -652,6 +816,103 @@ func (c *stmtCheck) checkDDL(final bool) (bool, error) {
 		return false, fmt.Errorf("statement %s is not one mysqldump writes", describe(c.tokens, 4))
 	}
 	return false, nil
+}
+
+// checkObjectName checks the name at c.tokens[i], after any IF [NOT] EXISTS.
+// It needs the token after the name to see a qualifier written apart.
+func (c *stmtCheck) checkObjectName(i int, final bool) (bool, error) {
+	t := c.tokens
+	for i < len(t) && (t[i].is("IF") || t[i].is("NOT") || t[i].is("EXISTS")) {
+		i++
+	}
+	if i+1 >= len(t) && !final {
+		return false, nil
+	}
+	if i < len(t) {
+		if err := c.checkQualifier(t[i:]); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// checkTriggerTable checks the table named after ON in CREATE TRIGGER name
+// {BEFORE|AFTER} event ON table.
+func (c *stmtCheck) checkTriggerTable(i int, final bool) (bool, error) {
+	for j := i + 1; j < len(c.tokens) && j < i+8; j++ {
+		if c.tokens[j].is("ON") {
+			return c.checkObjectName(j+1, final)
+		}
+	}
+	if len(c.tokens) < i+8 && !final {
+		return false, nil
+	}
+	return false, fmt.Errorf("CREATE TRIGGER %s is not one mysqldump writes", describe(c.tokens[i:], 6))
+}
+
+// checkAlterTable allows only ALTER TABLE name {DISABLE|ENABLE} KEYS, the
+// one ALTER TABLE mysqldump writes.
+func (c *stmtCheck) checkAlterTable(i int, final bool) (bool, error) {
+	if !final {
+		return false, nil
+	}
+	t := c.tokens
+	if i < len(t) {
+		if err := c.checkQualifier(t[i:]); err != nil {
+			return false, err
+		}
+		if e := nameEnd(t, i); len(t) == e+2 && (t[e].is("DISABLE") || t[e].is("ENABLE")) && t[e+1].is("KEYS") {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("ALTER TABLE %s is not one mysqldump writes", describe(t[min(i, len(t)):], 5))
+}
+
+// checkAllNames checks every name in a DROP or LOCK TABLES statement.
+func (c *stmtCheck) checkAllNames(t []sqlToken) error {
+	for i, tok := range t {
+		if tok.kind == 'w' && strings.HasPrefix(tok.text, ".") {
+			continue // the rest of a qualified name checked at its start
+		}
+		if tok.kind == 'w' || tok.kind == '`' {
+			if err := c.checkQualifier(t[i:]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkQualifier refuses a name starting at t[0] that is qualified with a
+// database other than the target: db.name, `db`.`name` or `db` . `name`.
+func (c *stmtCheck) checkQualifier(t []sqlToken) error {
+	var schema string
+	switch {
+	case t[0].kind == 'w' && strings.Contains(t[0].text, "."):
+		schema = t[0].text[:strings.IndexByte(t[0].text, '.')]
+	case len(t) > 1 && t[1].kind == 'w' && strings.HasPrefix(t[1].text, "."):
+		schema = t[0].text
+	default:
+		return nil
+	}
+	if c.database != "" && schema == c.database {
+		return nil
+	}
+	return fmt.Errorf("name qualified with database %q: the import may only write to the site database %q", schema, c.database)
+}
+
+// nameEnd returns the index of the token after the name starting at t[i].
+func nameEnd(t []sqlToken, i int) int {
+	j := i + 1
+	switch {
+	case t[i].kind == 'w' && strings.HasSuffix(t[i].text, "."):
+		return j + 1 // db.`name`
+	case j < len(t) && t[j].kind == 'w' && t[j].text == ".":
+		return j + 2 // `db` . `name`
+	case j < len(t) && t[j].kind == 'w' && strings.HasPrefix(t[j].text, "."):
+		return j + 1 // `db`.name
+	}
+	return j
 }
 
 // checkDatabaseName allows CREATE or ALTER DATABASE only for the target
@@ -680,25 +941,34 @@ func (c *stmtCheck) checkName(what string, t sqlToken) error {
 }
 
 // checkSet refuses SET assignments that could make the client end quotes
-// where this scanner does not.
+// where this scanner does not, and tracks user variables saved from system
+// variables.
 func (c *stmtCheck) checkSet(t []sqlToken) error {
 	if len(t) > 0 && t[0].is("STATEMENT") {
 		return errors.New("SET STATEMENT is not one mysqldump writes")
 	}
 	for _, tok := range t {
-		up := strings.ToUpper(tok.text)
-		for _, cs := range unsafeCharsets {
-			if tok.kind != 'p' && (up == cs || strings.HasPrefix(up, cs+"_")) {
-				return fmt.Errorf("SET to character set %s, in which a backslash byte can end another character", tok.text)
-			}
+		if tok.kind != 'p' && unsafeCharset(tok.text) {
+			return fmt.Errorf("SET to character set %s, in which a backslash byte can end another character", tok.text)
 		}
 	}
+	c.setVars = map[string]bool{}
 	for _, a := range splitAssignments(t) {
 		if err := c.checkAssignment(a); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func unsafeCharset(name string) bool {
+	up := strings.ToUpper(name)
+	for _, cs := range unsafeCharsets {
+		if up == cs || strings.HasPrefix(up, cs+"_") {
+			return true
+		}
+	}
+	return false
 }
 
 // splitAssignments splits a SET statement's tokens at top-level commas.
@@ -724,7 +994,25 @@ func splitAssignments(t []sqlToken) [][]sqlToken {
 	return append(out, t[start:])
 }
 
+// checkAssignment allows SET @v = @@name, which saves a system variable, and
+// SET name = @v only when @v holds name's saved value. sql_mode and the client
+// character set may otherwise be set only to values checkSQLMode and
+// checkClientCharset allow.
 func (c *stmtCheck) checkAssignment(a []sqlToken) error {
+	if len(a) == 0 {
+		return nil
+	}
+	if a[0].is("NAMES") || a[0].is("CHARSET") || a[0].is("CHARACTER") {
+		// SET NAMES cs [COLLATE x], SET CHARSET cs, SET CHARACTER SET cs.
+		i := 1
+		if a[0].is("CHARACTER") {
+			i = 2
+		}
+		if i >= len(a) {
+			return fmt.Errorf("SET %s without a character set", describe(a, 3))
+		}
+		return checkClientCharset(a[i])
+	}
 	eq := len(a)
 	for i, tok := range a {
 		if tok.kind == 'p' && tok.text == "=" {
@@ -732,56 +1020,126 @@ func (c *stmtCheck) checkAssignment(a []sqlToken) error {
 			break
 		}
 	}
-	lhs := a[:eq]
-	if n := len(lhs); n > 0 && lhs[n-1].kind == 'p' && lhs[n-1].text == ":" {
-		lhs = lhs[:n-1]
-	}
 	var name string
-	for _, tok := range lhs {
+	for _, tok := range a[:eq] {
 		if tok.is("GLOBAL") || tok.is("SESSION") || tok.is("LOCAL") || tok.is("PERSIST") || tok.is("PERSIST_ONLY") {
 			continue
 		}
 		name += strings.ToUpper(tok.text)
 	}
-	for _, scope := range []string{"@@GLOBAL.", "@@SESSION.", "@@LOCAL.", "@@PERSIST.", "@@PERSIST_ONLY.", "@@"} {
-		if strings.HasPrefix(name, scope) {
-			name = strings.TrimPrefix(name, scope)
-			break
-		}
-	}
+	name = trimScope(name)
+	lexical := name == "SQL_MODE" || name == "CHARACTER_SET_CLIENT"
 	if eq == len(a) {
-		if strings.Contains(name, "SQL_MODE") {
-			return errors.New("SET of sql_mode in a form this check does not read")
+		if lexical || strings.HasPrefix(name, "@") {
+			return fmt.Errorf("SET %s in a form this check does not read", describe(a, 4))
 		}
 		return nil
 	}
 	rhs := a[eq+1:]
-	switch {
-	case name == "SQL_MODE":
-		return c.checkSQLMode(rhs)
-	case strings.HasPrefix(name, "@"):
-		if c.savedModes == nil {
-			c.savedModes = map[string]bool{}
+	if isUserVar(name) {
+		sysvar, ok := savedFrom(rhs)
+		if !ok {
+			return fmt.Errorf("SET %s = %s: a user variable may only be saved from a session system variable", a[0].text, describe(rhs, 4))
 		}
-		c.savedModes[name] = len(rhs) == 1 && (rhs[0].is("@@SQL_MODE") || rhs[0].is("@@SESSION.SQL_MODE") || rhs[0].is("@@LOCAL.SQL_MODE"))
+		c.vars.saved[name] = sysvar
+		c.setVars[name] = true
+		return nil
+	}
+	if len(rhs) == 1 && rhs[0].kind == 'w' && isUserVar(rhs[0].text) {
+		v := strings.ToUpper(rhs[0].text)
+		c.setVars[v] = true
+		if !c.vars.trusted(v, name) {
+			return fmt.Errorf("SET %s = %s: the variable was not saved from @@%s, or the dump mentions it elsewhere", strings.ToLower(name), rhs[0].text, strings.ToLower(name))
+		}
+		return nil
+	}
+	switch name {
+	case "SQL_MODE":
+		return checkSQLMode(rhs)
+	case "CHARACTER_SET_CLIENT":
+		if len(rhs) != 1 {
+			return fmt.Errorf("SET character_set_client = %s: only a named character set is allowed", describe(rhs, 4))
+		}
+		return checkClientCharset(rhs[0])
 	}
 	return nil
 }
 
-// checkSQLMode allows sql_mode to be set to one quoted string without
-// NO_BACKSLASH_ESCAPES, or to a user variable saved from @@sql_mode.
-func (c *stmtCheck) checkSQLMode(rhs []sqlToken) error {
-	if len(rhs) == 1 {
-		v := rhs[0]
-		// Dropping backslashes keeps an escaped letter from hiding the word.
-		if (v.kind == '\'' || v.kind == '"') && !strings.Contains(strings.ToUpper(strings.ReplaceAll(v.text, `\`, "")), "NO_BACKSLASH_ESCAPES") {
-			return nil
-		}
-		if v.kind == 'w' && strings.HasPrefix(v.text, "@") && c.savedModes[strings.ToUpper(v.text)] {
-			return nil
+// trimScope removes a leading @@, @@SESSION. or @@LOCAL. from an upper-case
+// system variable name. A @@GLOBAL. or @@PERSIST. prefix stays.
+func trimScope(name string) string {
+	for _, scope := range []string{"@@SESSION.", "@@LOCAL.", "@@"} {
+		if rest, ok := strings.CutPrefix(name, scope); ok {
+			return rest
 		}
 	}
-	return fmt.Errorf("SET sql_mode = %s: only a quoted mode list without NO_BACKSLASH_ESCAPES, or a variable saved from @@sql_mode, is allowed", describe(rhs, 4))
+	return name
+}
+
+func isUserVar(word string) bool {
+	return strings.HasPrefix(word, "@") && !strings.HasPrefix(word, "@@")
+}
+
+// savedFrom returns the session system variable rhs reads, if rhs is exactly
+// @@name, @@SESSION.name or @@LOCAL.name.
+func savedFrom(rhs []sqlToken) (string, bool) {
+	if len(rhs) != 1 || rhs[0].kind != 'w' || !strings.HasPrefix(rhs[0].text, "@@") {
+		return "", false
+	}
+	name := trimScope(strings.ToUpper(rhs[0].text))
+	if name == "" || strings.Contains(name, ".") || strings.Contains(name, "@") {
+		return "", false
+	}
+	return name, true
+}
+
+// safeSQLModes are the sql_mode values that leave how quotes and backslashes
+// are read alone. NO_BACKSLASH_ESCAPES and ANSI_QUOTES change it, as do the
+// combination modes that include ANSI_QUOTES (ANSI, DB2, MAXDB, MSSQL,
+// ORACLE, POSTGRESQL), so none of those are here.
+var safeSQLModes = map[string]bool{
+	"": true, "ALLOW_INVALID_DATES": true, "EMPTY_STRING_IS_NULL": true, "ERROR_FOR_DIVISION_BY_ZERO": true,
+	"HIGH_NOT_PRECEDENCE": true, "IGNORE_BAD_TABLE_OPTIONS": true, "IGNORE_SPACE": true, "NO_AUTO_CREATE_USER": true,
+	"NO_AUTO_VALUE_ON_ZERO": true, "NO_DIR_IN_CREATE": true, "NO_ENGINE_SUBSTITUTION": true, "NO_FIELD_OPTIONS": true,
+	"NO_KEY_OPTIONS": true, "NO_TABLE_OPTIONS": true, "NO_UNSIGNED_SUBTRACTION": true, "NO_ZERO_DATE": true,
+	"NO_ZERO_IN_DATE": true, "ONLY_FULL_GROUP_BY": true, "PAD_CHAR_TO_FULL_LENGTH": true, "PIPES_AS_CONCAT": true,
+	"REAL_AS_FLOAT": true, "SIMULTANEOUS_ASSIGNMENT": true, "STRICT_ALL_TABLES": true, "STRICT_TRANS_TABLES": true,
+	"TIME_ROUND_FRACTIONAL": true, "TIME_TRUNCATE_FRACTIONAL": true, "TRADITIONAL": true,
+}
+
+// checkSQLMode allows sql_mode to be set to one quoted list of safeSQLModes.
+func checkSQLMode(rhs []sqlToken) error {
+	if len(rhs) != 1 || rhs[0].kind != '\'' && rhs[0].kind != '"' {
+		return fmt.Errorf("SET sql_mode = %s: only a quoted list of modes, or a variable saved from @@sql_mode, is allowed", describe(rhs, 4))
+	}
+	if strings.Contains(rhs[0].text, `\`) {
+		return fmt.Errorf("SET sql_mode = %s: a backslash in the mode list is not allowed", describe(rhs, 1))
+	}
+	for _, mode := range strings.Split(rhs[0].text, ",") {
+		if mode = strings.ToUpper(strings.TrimSpace(mode)); !safeSQLModes[mode] {
+			return fmt.Errorf("SET sql_mode: mode %s is not allowed; the import allows only modes that leave how quotes and backslashes are read alone", mode)
+		}
+	}
+	return nil
+}
+
+// checkClientCharset allows a named character set in which a backslash byte
+// is always a backslash. DEFAULT and numeric ids, which name the server's
+// choice, are refused.
+func checkClientCharset(t sqlToken) error {
+	name := t.text
+	valid := (t.kind == 'w' || t.kind == '\'' || t.kind == '"') && name != "" && !strings.EqualFold(name, "DEFAULT")
+	for i := 0; valid && i < len(name); i++ {
+		ch := name[i]
+		valid = ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || i > 0 && (ch >= '0' && ch <= '9' || ch == '_')
+	}
+	if !valid {
+		return fmt.Errorf("character_set_client %s: only a named character set is allowed", describe([]sqlToken{t}, 1))
+	}
+	if unsafeCharset(name) {
+		return fmt.Errorf("SET to character set %s, in which a backslash byte can end another character", name)
+	}
+	return nil
 }
 
 // describe renders up to n tokens for an error message.

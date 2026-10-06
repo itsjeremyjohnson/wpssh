@@ -127,13 +127,22 @@ type restoreResult struct {
 	Output   string
 }
 
+// importPreamble goes before the dump in the import stream and sets the
+// session state scanDump assumes: an sql_mode without NO_BACKSLASH_ESCAPES or
+// ANSI_QUOTES, and a character set in which a backslash byte is always a
+// backslash. wp db import keeps the server's default sql_mode, under which
+// mysql could end a quote where scanDump does not. The mode is the one
+// mysqldump and mariadb-dump headers set.
+const importPreamble = "SET SESSION sql_mode='NO_AUTO_VALUE_ON_ZERO';\nSET NAMES utf8mb4;\n"
+
 // restoreDB replaces the target's database with the dump in req.Source.
 //
 // It copies the dump into a private staging file while scanning it with
 // scanDump, so the bytes imported are the bytes checked. It then shows the
 // site, database and backup path, and stops unless req.Confirmed. Before
 // importing it saves a backup of the current database to req.BackupPath and
-// stops if that fails or is empty.
+// stops if that fails or is empty. The import streams importPreamble, then
+// the staged dump.
 func restoreDB(ctx context.Context, req restoreRequest, target restoreTarget) (restoreResult, error) {
 	var res restoreResult
 	database := ""
@@ -182,7 +191,7 @@ func restoreDB(ctx context.Context, req restoreRequest, target restoreTarget) (r
 	if _, err := staged.Seek(0, io.SeekStart); err != nil {
 		return res, fmt.Errorf("rewind staged dump, nothing imported: %w", err)
 	}
-	result, err := target.Import(ctx, staged)
+	result, err := target.Import(ctx, io.MultiReader(strings.NewReader(importPreamble), staged))
 	res.Imported = true
 	res.Output = result.Stdout
 	if err != nil {
@@ -264,6 +273,8 @@ func (d *siteDatabase) Import(ctx context.Context, dump io.Reader) (internalssh.
 }
 
 // dbImportStdin is the remote command that imports a dump read from stdin.
+// wp db import passes --default-character-set to mysql, so the client reads
+// the dump as utf8mb4, the character set importPreamble sets on the server.
 func dbImportStdin(wpPath string) string {
-	return wpcli.New("db", "import").Arg("-").Build(wpPath)
+	return wpcli.New("db", "import").Arg("-").Flag("default-character-set", "utf8mb4").Build(wpPath)
 }

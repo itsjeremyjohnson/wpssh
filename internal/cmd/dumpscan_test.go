@@ -8,7 +8,7 @@ import (
 )
 
 // mysqldumpSample is shaped like `wp db export -` output from mysqldump 8.0
-// with a trigger and a routine, and holds string data that mentions client
+// on a server with GTIDs, with a trigger and a routine, and holds string data that mentions client
 // commands. Its database is wp_acme.
 const mysqldumpSample = `-- MySQL dump 10.13  Distrib 8.0.39, for Linux (x86_64)
 --
@@ -26,6 +26,14 @@ const mysqldumpSample = `-- MySQL dump 10.13  Distrib 8.0.39, for Linux (x86_64)
 /*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
 /*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
 /*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+SET @MYSQLDUMP_TEMP_LOG_BIN = @@SESSION.SQL_LOG_BIN;
+SET @@SESSION.SQL_LOG_BIN= 0;
+
+--
+-- GTID state at the beginning of the backup 
+--
+
+SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '3e11fa47-71ca-11e1-9e33-c80aa9429562:1-5';
 
 --
 -- Table structure for table ` + "`wp_posts`" + `
@@ -77,6 +85,7 @@ BEGIN
   SELECT COUNT(*) FROM wp_posts;
 END ;;
 DELIMITER ;
+SET @@SESSION.SQL_LOG_BIN = @MYSQLDUMP_TEMP_LOG_BIN;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
@@ -114,12 +123,14 @@ const mariadbSample = "/*M!999999\\- enable the sandbox mode */ \n" +
 func TestScanDumpAcceptsDumps(t *testing.T) {
 	longValue := strings.Repeat(`x\'y; system \\! `, 1<<16) // ~1 MiB in one value
 	cases := map[string]string{
-		"mysqldump":         mysqldumpSample,
-		"mysqldump crlf":    strings.ReplaceAll(mysqldumpSample, "\n", "\r\n"),
-		"mariadb-dump":      mariadbSample,
-		"very long line":    "INSERT INTO `wp_postmeta` VALUES (1,'" + longValue + "');\n-- Dump completed\n",
-		"no final newline":  "INSERT INTO t VALUES (1)",
-		"comment-only line": "  -- system id\n# source x.sql\n/* \\! id */\nINSERT INTO t VALUES (1);\n",
+		"mysqldump":               mysqldumpSample,
+		"mysqldump crlf":          strings.ReplaceAll(mysqldumpSample, "\n", "\r\n"),
+		"mariadb-dump":            mariadbSample,
+		"very long line":          "INSERT INTO `wp_postmeta` VALUES (1,'" + longValue + "');\n-- Dump completed\n",
+		"no final newline":        "INSERT INTO t VALUES (1)",
+		"comment-only line":       "  -- system id\n# source x.sql\n/* \\! id */\nINSERT INTO t VALUES (1);\n",
+		"site database qualified": "INSERT INTO wp_acme.wp_posts VALUES (1);\nDROP TABLE IF EXISTS `wp_acme`.`wp_old`;\n",
+		"import preamble":         importPreamble,
 	}
 	for name, dump := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -174,19 +185,53 @@ func TestScanDumpRefusesClientCommands(t *testing.T) {
 		{"outfile in insert", "INSERT INTO t SELECT * FROM u INTO OUTFILE '/tmp/x';\n", "OUTFILE"},
 		{"dumpfile in trigger body", "DELIMITER ;;\nCREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW BEGIN\nSELECT 1 INTO DUMPFILE '/tmp/x';\nEND;;\n", "DUMPFILE"},
 		{"no backslash escapes", "SET sql_mode = 'NO_BACKSLASH_ESCAPES';\n", "NO_BACKSLASH_ESCAPES"},
-		{"no backslash escapes escaped", "/*!40101 SET SQL_MODE='NO\\_BACKSLASH_ESCAPES' */;\n", "NO_BACKSLASH_ESCAPES"},
+		{"no backslash escapes escaped", "/*!40101 SET SQL_MODE='NO\\_BACKSLASH_ESCAPES' */;\n", "backslash in the mode list"},
 		{"sql mode concat", "SET @@session.sql_mode = CONCAT('NO_BACKSLASH', '_ESCAPES');\n", "sql_mode"},
 		{"sql mode adjacent literals", "SET sql_mode = 'NO_BACKSLASH' '_ESCAPES';\n", "sql_mode"},
 		{"sql mode number", "SET SESSION sql_mode = 2097152;\n", "sql_mode"},
-		{"sql mode from tampered variable", "SET @OLD_SQL_MODE = 'NO_BACKSLASH_ESCAPES';\nSET SQL_MODE=@OLD_SQL_MODE;\n", "sql_mode"},
+		{"sql mode from tampered variable", "SET @OLD_SQL_MODE = 'NO_BACKSLASH_ESCAPES';\nSET SQL_MODE=@OLD_SQL_MODE;\n", "user variable"},
 		{"gbk names", "/*!40101 SET NAMES gbk */;\n", "character set gbk"},
 		{"sjis client charset", "SET character_set_client = 'sjis';\n", "character set sjis"},
 		{"delimiter with letters", "DELIMITER END\n", "unsupported DELIMITER"},
 		{"delimiter with two arguments", "DELIMITER ;; x\n", "unsupported DELIMITER"},
 		{"delimiter inside statement", "INSERT INTO t VALUES\nDELIMITER ;;\n", "DELIMITER inside a statement"},
-		{"comment line hides comment start", "--x /*\n\\! id\n*/\n", `"\\!"`},
-		{"hint is code", "INSERT /*+ \\! id */ INTO t VALUES (1);\n", `"\\!"`},
+		{"comment line hides comment start", "--x /*\n\\! id\n*/\n", "statement -"},
+		{"hint is code", "INSERT /*+ \\! id */ INTO t VALUES (1);\n", "optimizer hint"},
 		{"later in a long line", "INSERT INTO t VALUES ('" + strings.Repeat("a", 1<<20) + "'); \\! id\n", `"\\!"`},
+		// The client and server end a backtick identifier at the next
+		// backtick; a backslash does not escape it.
+		{"backslash before backtick", "CREATE TABLE `t\\` (x INT);\nSELECT 1 INTO OUTFILE \"/tmp/review-outfile\";\n-- `\n", "backslash inside"},
+		// Neither the client nor the server reads quotes inside /*+ */.
+		{"quote in optimizer hint", "COMMIT /*+ ' */;\nSELECT 1 INTO OUTFILE \"/tmp/review-outfile\";\n-- '\n", "optimizer hint"},
+		{"user variable assigned in insert", "CREATE TEMPORARY TABLE t (x TEXT);\nSET @old=@@sql_mode;\nINSERT INTO t VALUES (@old:='NO_BACKSLASH_ESCAPES');\nSET sql_mode=@old;\n", ":="},
+		{"saved mode rewritten by trigger", "/*!50003 SET @saved_sql_mode = @@sql_mode */ ;\nDELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON wp_posts FOR EACH ROW SET @saved_sql_mode = 'NO_BACKSLASH_ESCAPES';;\nDELIMITER ;\nSET @saved_sql_mode = @@sql_mode;\nINSERT INTO wp_posts VALUES (1);\nSET sql_mode = @saved_sql_mode;\n", "sql_mode"},
+		{"saved mode rewritten by trigger select into", "SET @m = @@sql_mode;\nDELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON wp_posts FOR EACH ROW SELECT 'NO_BACKSLASH_ESCAPES' INTO@m;;\nDELIMITER ;\nINSERT INTO wp_posts VALUES (1);\nSET sql_mode = @m;\n", "sql_mode"},
+		// mysql may compare user variable names without accents.
+		{"saved mode rewritten under accented name", "SET @saved_sql_mode = @@sql_mode;\nDELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON wp_posts FOR EACH ROW SET @s\u00e1ved_sql_mode = 'NO_BACKSLASH_ESCAPES';;\nDELIMITER ;\nINSERT INTO wp_posts VALUES (1);\nSET sql_mode = @saved_sql_mode;\n", "sql_mode"},
+		{"ansi quotes", "/*!40101 SET SQL_MODE='ANSI_QUOTES' */;\n", "ANSI_QUOTES"},
+		{"ansi combination mode", "SET sql_mode = 'ANSI';\n", "ANSI"},
+		{"client charset from another variable", "SET @v = @@time_zone;\nSET character_set_client = @v;\n", "character_set_client"},
+		{"client charset default", "SET NAMES DEFAULT;\n", "DEFAULT"},
+		{"client charset by number", "SET character_set_client = 28;\n", "character_set_client"},
+		{"qualified drop", "DROP TABLE other_db.wp_posts;\n", `"other_db"`},
+		{"qualified insert", "INSERT INTO `other_db`.`wp_posts` VALUES (1);\n", `"other_db"`},
+		{"qualified create", "CREATE TABLE IF NOT EXISTS other_db.t (x INT);\n", `"other_db"`},
+		{"qualified trigger table", "CREATE TRIGGER x BEFORE INSERT ON `other_db` . `t` FOR EACH ROW SET NEW.a = 1;\n", `"other_db"`},
+		{"qualified lock", "LOCK TABLES wp_posts WRITE, `other_db`.t WRITE;\n", `"other_db"`},
+		{"alter table rename", "ALTER TABLE wp_posts RENAME TO other_db.wp_posts;\n", "ALTER TABLE"},
+		// A server older than the version skips the comment without reading
+		// quotes, so it ends at */ while the client is still in the quote.
+		{"comment end inside quote in versioned comment", "INSERT INTO t VALUES (1) /*!99999 ' */, (2); SELECT 1 INTO OUTFILE \"/tmp/x\"; -- ' */;\n", "inside a quote"},
+		{"escaped comment end inside quote in versioned comment", "INSERT INTO t VALUES (1) /*!99999 '\\*/, (2); SELECT 1 INTO OUTFILE \"/tmp/x\"; -- ' */;\n", "inside a quote"},
+		// The client keeps /*! */ in the statement, so it reads the DELIMITER
+		// line as SQL.
+		{"delimiter after versioned comment", "/*!40101 */\nDELIMITER ;;\nINSERT INTO t VALUES (1);\n", "DELIMITER inside a statement"},
+		{"line comment in versioned comment", "/*!99999 -- */ SELECT 1 INTO OUTFILE '/tmp/x';\n", "comment inside"},
+		{"comment line in versioned comment", "/*!40101 SET x = 1\n-- */ SELECT 1 INTO OUTFILE '/tmp/x';\n", "comment inside"},
+		// mysql reads a line starting with --x as code, so ' opens a quote.
+		{"dashes without space at statement start", "--x '\nINSERT INTO t VALUES (' \\! id\n');\n", "statement -"},
+		// The client reads --x mid-statement as code, so /* opens a comment.
+		{"dashes without space mid statement", "INSERT INTO t VALUES (1\n--1 /*\n' */ ); SELECT 1 INTO OUTFILE '/tmp/x'; -- '\n", "SELECT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
