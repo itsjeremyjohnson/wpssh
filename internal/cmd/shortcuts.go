@@ -32,10 +32,6 @@ type BackupCmd struct {
 
 func (c *BackupCmd) Run(g *Globals) error {
 	return runScript(g, scripts.ScriptFullBackup, []string{g.Site, c.Description}, func(output string, globals *Globals) error {
-		if globals.JSON {
-			fmt.Println(output)
-			return nil
-		}
 		var result struct {
 			Status   string `json:"status"`
 			Filename string `json:"filename"`
@@ -43,16 +39,16 @@ func (c *BackupCmd) Run(g *Globals) error {
 			Size     string `json:"size"`
 			Error    string `json:"error"`
 		}
-		if err := json.Unmarshal([]byte(output), &result); err != nil {
+		parseErr := json.Unmarshal([]byte(output), &result)
+		if globals.JSON || parseErr != nil {
 			fmt.Println(output)
-			return nil
-		}
-		if result.Status == "ok" {
+		} else if result.Status == "ok" {
 			fmt.Printf("Backup created: %s\n", result.Filename)
 			fmt.Printf("Path:           %s\n", result.Path)
 			fmt.Printf("Size:           %s\n", result.Size)
-		} else {
-			fmt.Printf("Backup failed: %s\n", result.Error)
+		}
+		if parseErr == nil && result.Status != "ok" {
+			return fmt.Errorf("backup failed: %s", result.Error)
 		}
 		return nil
 	})

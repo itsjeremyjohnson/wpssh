@@ -170,7 +170,8 @@ wpgo -s mysite core verify-checksums
 ### db -- Database operations
 
 ```bash
-wpgo -s mysite db export
+wpgo -s mysite db export                 # ~/backups/wpgo/mysite_DB_<timestamp>.sql on the server
+wpgo -s mysite db export pre-update.sql  # ~/backups/wpgo/pre-update.sql on the server
 wpgo -s mysite db import dump.sql
 wpgo -s mysite db query "SELECT COUNT(*) FROM wp_posts"
 wpgo -s mysite db size
@@ -287,7 +288,7 @@ wpgo -s mysite raw "wp option list"
 ```bash
 wpgo -s mysite health         # Full site health check
 wpgo -s mysite status         # Quick site status overview
-wpgo -s mysite backup         # Database backup
+wpgo -s mysite backup         # Database backup to ~/backups/wpgo on the server (dir 0700, file 0600)
 wpgo -s mysite backup "Pre-update snapshot"  # Backup with description
 wpgo -s mysite update-all -y  # Update core + plugins + themes
 wpgo -s mysite clear-cache    # Full cache clear

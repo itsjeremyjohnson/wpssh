@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"time"
 
 	"github.com/builtbyrobben/wpssh/internal/cache"
 	"github.com/builtbyrobben/wpssh/internal/wpcli"
@@ -25,7 +27,7 @@ type DBCmd struct {
 }
 
 type DBExportCmd struct {
-	File string `arg:"" optional:"" help:"Export file path"`
+	File string `arg:"" optional:"" help:"Export file. Default and relative paths go under $WPGO_BACKUP_DIR (default ~/backups/wpgo); paths inside the web root are refused; '-' streams to stdout."`
 }
 type DBImportCmd struct {
 	File string `arg:"" help:"Import file path"`
@@ -46,6 +48,10 @@ type (
 	DBResetCmd    struct{}
 )
 
+// unsafeFilenameChars matches characters replaced in default dump names,
+// mirroring full-backup.sh.
+var unsafeFilenameChars = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
 func (c *DBExportCmd) Run(g *Globals) error {
 	rc, err := NewRunContext(g)
 	if err != nil {
@@ -57,13 +63,13 @@ func (c *DBExportCmd) Run(g *Globals) error {
 		return err
 	}
 
-	builder := wpcli.New("db", "export")
-	if c.File != "" {
-		builder.Arg(c.File)
-	}
-	result, err := rc.ExecWP(context.Background(), site, builder.Build(site.WPPath))
+	defaultName := fmt.Sprintf("%s_DB_%s.sql", unsafeFilenameChars.ReplaceAllString(site.Alias, "_"), time.Now().Format("20060102_150405"))
+	result, err := rc.ExecWP(context.Background(), site, wpcli.DBExport(site.WPPath, c.File, defaultName))
 	if err != nil {
 		return err
+	}
+	if result.ExitCode == wpcli.WebrootRefusedExit {
+		return fmt.Errorf("db export refused (exit %d): %s", result.ExitCode, result.Stderr)
 	}
 	if result.ExitCode != 0 {
 		return fmt.Errorf("wp db export: %s", result.Stderr)
