@@ -67,6 +67,7 @@ wpgo setup
 | Variable | Description |
 |----------|-------------|
 | `WPGO_SITE` | Default target site alias |
+| `WPGO_LOCAL_BACKUP_DIR` | Local dir for `db export` and `backup` dumps (default `~/wpgo-backups`) |
 
 ### Site Registry
 
@@ -170,13 +171,23 @@ wpgo -s mysite core verify-checksums
 ### db -- Database operations
 
 ```bash
-wpgo -s mysite db export
+wpgo -s mysite db export                 # this machine: ~/wpgo-backups/mysite/mysite_DB_export_<timestamp>_<random>.sql
+wpgo -s mysite db export pre-update.sql  # this machine: ./pre-update.sql
+(umask 077 && wpgo -s mysite db export - > dump.sql)  # stdout; see below
 wpgo -s mysite db import dump.sql
 wpgo -s mysite db query "SELECT COUNT(*) FROM wp_posts"
 wpgo -s mysite db size
 wpgo -s mysite db tables
 wpgo -s mysite db optimize
 wpgo -s mysite db repair
+```
+
+`db export` and `backup` run `wp db export -` on the server and stream the dump over SSH to the machine running wpgo. Nothing is written on the server, and wpgo has no option to write one there. The default destination is `${WPGO_LOCAL_BACKUP_DIR:-~/wpgo-backups}/<site>/<site>_DB_<desc>_<timestamp>_<ms>_<random>.sql` (dir 0700, file 0600). wpgo writes to a temp file, fsyncs it and links it into place, then prints the path, byte size and sha256. It never replaces an existing file, including one created while the dump was streaming. If the remote export exits non-zero, the dump is empty, or its last non-empty line does not start with mysqldump's `-- Dump completed`, wpgo deletes the partial file and exits non-zero.
+
+`db export -` applies the same checks and exits non-zero on failure, but it cannot take back bytes already written to stdout, so check the exit status before using the output. Redirect it under `umask 077` so the dump is not world-readable:
+
+```bash
+(umask 077 && wpgo -s mysite db export - > dump.sql) || rm -f dump.sql
 ```
 
 ### user -- User management
@@ -276,18 +287,38 @@ wpgo -s mysite maintenance disable
 wpgo -s mysite eval "echo get_option('siteurl');"
 ```
 
+`eval` runs any PHP, so it can write files on the server. Take backups and exports with `wpgo db export`, never with `eval`.
+
 ### raw -- Pass-through to wp-cli
 
 ```bash
-wpgo -s mysite raw "wp option list"
+wpgo -s mysite raw -- option list
+wpgo -s mysite raw -- post meta update 7 title "'Spring cleaning tips'"
 ```
+
+Put wp-cli arguments after `--`. `raw` joins them with spaces and the server shell parses that line, so quote any argument that holds spaces or shell characters, in single quotes. Before connecting, `raw` refuses:
+
+- shell syntax outside single quotes: `;`, `&`, `|`, `<`, `>`, a newline, `(`, `)`, `{`, `}`, a leading `#`, `$` or a backtick (also inside double quotes), a line continuation, an unbalanced quote, the glob characters `*`, `?` and `[`, or a `~` at the start of a word or after `=` or `:`. Quote or backslash-escape them to pass them literally;
+- `db export` (or `db dump`) with a file argument other than `-`, with no file argument, with a flag outside a short mysqldump allowlist (blocks `--result-file`, `--tab`, their prefixes and `--defaults`), or with a `--tables` or `--exclude_tables` entry that starts with `-`. Use `wpgo db export`;
+- `export` (the WXR exporter);
+- `search-replace` or `db search-replace` with any `--export` flag;
+- `db query` whose SQL contains `OUTFILE` or `DUMPFILE` in any case, a mysql client command that runs or writes files (`system`, `tee`, `pager`, `source` or `edit` at the start of a statement, or `\!`, `\T`, `\P`, `\.` or `\e` anywhere, in any case), or the same in an `--execute` value;
+- `db query`, `import`, `create`, `drop`, `reset`, `clean`, `check`, `optimize`, `repair`, `tables`, `size`, `columns` and `prefix` with a flag outside a short per-command allowlist. wp-cli hands extra flags to mysql or mysqlcheck, so this blocks `--tee`, `--pager`, `--init-command`, `--execute` (except on `db query`, where its SQL is checked), `--defaults` and `--defaults-*` (`--no-defaults` passes), and their prefixes. `wpgo db query` and `wpgo db import` apply the same checks;
+- `db cli` and `db connect`;
+- the `--exec` and `--require` globals.
+
+`sql` counts as `db`, and any run of `--` delimiters is skipped. On WP Engine, whose gateway parses each word a second time, `raw` checks that second layer too.
+
+`eval` and `eval-file` are the one exception: `raw` checks only their shell syntax, never their PHP, and allows `--exec` and `--require` with them. PHP can write files on the server, so take backups and exports with `wpgo db export`, never with `eval`.
+
+These checks stop agents and operators from writing dumps on the server by accident or in passing. `eval` and `eval-file` are the deliberate escape hatch. The checks are not a sandbox against an operator who sets out to get around them.
 
 ### Shortcut Commands
 
 ```bash
 wpgo -s mysite health         # Full site health check
 wpgo -s mysite status         # Quick site status overview
-wpgo -s mysite backup         # Database backup
+wpgo -s mysite backup         # Database backup streamed to ~/wpgo-backups/mysite/ on this machine
 wpgo -s mysite backup "Pre-update snapshot"  # Backup with description
 wpgo -s mysite update-all -y  # Update core + plugins + themes
 wpgo -s mysite clear-cache    # Full cache clear

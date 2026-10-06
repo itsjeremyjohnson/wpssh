@@ -25,37 +25,31 @@ func (c *HealthCmd) Run(g *Globals) error {
 	})
 }
 
-// BackupCmd creates a named database backup via the embedded full-backup.sh script.
+// BackupCmd creates a named database backup by streaming the dump to this
+// machine. Nothing is written on the server.
 type BackupCmd struct {
 	Description string `arg:"" optional:"" help:"Backup description" default:"Manual"`
 }
 
 func (c *BackupCmd) Run(g *Globals) error {
-	return runScript(g, scripts.ScriptFullBackup, []string{g.Site, c.Description}, func(output string, globals *Globals) error {
-		if globals.JSON {
-			fmt.Println(output)
-			return nil
-		}
-		var result struct {
-			Status   string `json:"status"`
-			Filename string `json:"filename"`
-			Path     string `json:"path"`
-			Size     string `json:"size"`
-			Error    string `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(output), &result); err != nil {
-			fmt.Println(output)
-			return nil
-		}
-		if result.Status == "ok" {
-			fmt.Printf("Backup created: %s\n", result.Filename)
-			fmt.Printf("Path:           %s\n", result.Path)
-			fmt.Printf("Size:           %s\n", result.Size)
-		} else {
-			fmt.Printf("Backup failed: %s\n", result.Error)
-		}
-		return nil
-	})
+	rc, err := NewRunContext(g)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	site, err := rc.ResolveSite()
+	if err != nil {
+		return err
+	}
+	path, err := defaultDumpPath(site.Alias, c.Description, time.Now())
+	if err != nil {
+		return err
+	}
+	dump, err := exportToLocal(rc, site, path)
+	if err != nil {
+		return fmt.Errorf("backup failed: %w", err)
+	}
+	return printDump(rc, "Backup saved:", dump)
 }
 
 // StatusCmd shows a quick site status (from cache or live).
@@ -217,6 +211,12 @@ func runScript(g *Globals, scriptName string, args []string, format func(string,
 	// Extract JSON from output (wp-cli may prepend warnings).
 	output := extractJSON(result.Stdout)
 
+	if result.ExitCode != 0 {
+		if output != "" {
+			fmt.Println(output)
+		}
+		return fmt.Errorf("%s exited %d: %s", scriptName, result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
 	return format(output, g)
 }
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/builtbyrobben/wpssh/internal/cache"
 	"github.com/builtbyrobben/wpssh/internal/wpcli"
@@ -25,7 +26,7 @@ type DBCmd struct {
 }
 
 type DBExportCmd struct {
-	File string `arg:"" optional:"" help:"Export file path"`
+	File string `arg:"" optional:"" help:"Local file on this machine (default $WPGO_LOCAL_BACKUP_DIR/<site>/, else ~/wpgo-backups/<site>/); '-' streams to stdout. Nothing is written on the server."`
 }
 type DBImportCmd struct {
 	File string `arg:"" help:"Import file path"`
@@ -57,22 +58,28 @@ func (c *DBExportCmd) Run(g *Globals) error {
 		return err
 	}
 
-	builder := wpcli.New("db", "export")
-	if c.File != "" {
-		builder.Arg(c.File)
+	if c.File == "-" {
+		return exportToStdout(rc, site)
 	}
-	result, err := rc.ExecWP(context.Background(), site, builder.Build(site.WPPath))
+
+	path := c.File
+	if path == "" {
+		if path, err = defaultDumpPath(site.Alias, "export", time.Now()); err != nil {
+			return err
+		}
+	}
+	dump, err := exportToLocal(rc, site, path)
 	if err != nil {
 		return err
 	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("wp db export: %s", result.Stderr)
-	}
-	fmt.Fprint(rc.Stdout, result.Stdout)
-	return nil
+	return printDump(rc, "Exported to:", dump)
 }
 
 func (c *DBImportCmd) Run(g *Globals) error {
+	// wp-cli reads a file argument that starts with -- as a mysql flag.
+	if err := checkWPArgv([]string{"db", "import", c.File}); err != nil {
+		return err
+	}
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err
@@ -101,6 +108,9 @@ func (c *DBImportCmd) Run(g *Globals) error {
 }
 
 func (c *DBQueryCmd) Run(g *Globals) error {
+	if err := checkWPArgv([]string{"db", "query", c.SQL}); err != nil {
+		return err
+	}
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err

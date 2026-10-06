@@ -32,7 +32,6 @@ func MustGetScript(name string) string {
 // Available script names.
 const (
 	ScriptHealthCheck   = "health-check.sh"
-	ScriptFullBackup    = "full-backup.sh"
 	ScriptCacheClear    = "cache-clear.sh"
 	ScriptSecurityAudit = "security-audit.sh"
 )

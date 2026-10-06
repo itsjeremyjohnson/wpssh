@@ -45,16 +45,23 @@ func NewSSHClient(pool *Pool) *SSHClient {
 // The canonicalHost parameter is the resolved IP:port used for rate limiting
 // and connection pooling.
 func (c *SSHClient) Exec(ctx context.Context, cfg ClientConfig, canonicalHost, command string) (ExecResult, error) {
-	return c.execInternal(ctx, cfg, canonicalHost, command, nil)
+	return c.execInternal(ctx, cfg, canonicalHost, command, nil, nil)
 }
 
 // ExecWithStdin runs a command on the specified host, piping stdin data.
 // Used for WP Engine adapter (stdin piping for file transfers).
 func (c *SSHClient) ExecWithStdin(ctx context.Context, cfg ClientConfig, canonicalHost, command string, stdin io.Reader) (ExecResult, error) {
-	return c.execInternal(ctx, cfg, canonicalHost, command, stdin)
+	return c.execInternal(ctx, cfg, canonicalHost, command, stdin, nil)
 }
 
-func (c *SSHClient) execInternal(ctx context.Context, cfg ClientConfig, canonicalHost, command string, stdin io.Reader) (ExecResult, error) {
+// ExecStream runs a command on the specified host and copies its stdout to
+// stdout as it arrives instead of buffering it. The returned ExecResult has an
+// empty Stdout.
+func (c *SSHClient) ExecStream(ctx context.Context, cfg ClientConfig, canonicalHost, command string, stdout io.Writer) (ExecResult, error) {
+	return c.execInternal(ctx, cfg, canonicalHost, command, nil, stdout)
+}
+
+func (c *SSHClient) execInternal(ctx context.Context, cfg ClientConfig, canonicalHost, command string, stdin io.Reader, stdoutW io.Writer) (ExecResult, error) {
 	start := time.Now()
 
 	client, release, err := c.pool.Get(ctx, cfg, canonicalHost)
@@ -89,6 +96,9 @@ func (c *SSHClient) execInternal(ctx context.Context, cfg ClientConfig, canonica
 
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
+	if stdoutW != nil {
+		session.Stdout = stdoutW
+	}
 	session.Stderr = &stderr
 
 	if stdin != nil {

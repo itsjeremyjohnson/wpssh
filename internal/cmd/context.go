@@ -113,6 +113,21 @@ func (rc *RunContext) ExecWP(ctx context.Context, site *registry.Site, wpCmd str
 	return a.Exec(ctx, rc.SSHClient, site, wpCmd)
 }
 
+// ExecWPStream executes a wp-cli command on a site and copies its stdout to
+// stdout as it arrives. In dry-run mode it prints the command and writes
+// nothing.
+func (rc *RunContext) ExecWPStream(ctx context.Context, site *registry.Site, wpCmd string, stdout io.Writer) (internalssh.ExecResult, error) {
+	a := adapter.ForSite(site)
+	if rc.Globals.Verbose {
+		fmt.Fprintf(rc.Stderr, "[adapter: %s] %s\n", a.Name(), wpCmd)
+	}
+	if rc.Globals.DryRun {
+		fmt.Fprintf(rc.Stderr, "[dry-run] %s\n", wpCmd)
+		return internalssh.ExecResult{}, nil
+	}
+	return a.ExecStream(ctx, rc.SSHClient, site, wpCmd, stdout)
+}
+
 // CacheGet checks the cache for a stored result. Returns the cached data
 // string or empty string on miss. Handles nil cache gracefully.
 func (rc *RunContext) CacheGet(siteAlias, commandCacheKey string) string {
