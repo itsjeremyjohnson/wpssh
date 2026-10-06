@@ -135,7 +135,7 @@ func TestScanDumpAcceptsDumps(t *testing.T) {
 		"large hex":                    "INSERT INTO t VALUES (0x" + strings.Repeat("ab", 1<<18) + ");\n",
 		"literal comments":             "INSERT INTO t /* gap */ VALUES /* gap */ (1,/*!40101 NULL */, /* gap */ _binary'foo'),(2,'DIRECTORY sys_eval(1)');\n",
 		"repeated variable references": "DELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON t FOR EACH ROW BEGIN " + strings.Repeat("SET NEW.x=@v; ", 10000) + " END;;\nDELIMITER ;\n",
-		"ordinary defaults":            "CREATE TABLE t (a INT DEFAULT -1,b TEXT DEFAULT 'sys_eval(1)',c TIMESTAMP DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n",
+		"ordinary defaults":            "CREATE TABLE t (a INT DEFAULT -1,b TEXT DEFAULT 'sys_eval(1)',c TIMESTAMP DEFAULT CURRENT_TIMESTAMP,d TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n",
 
 		"import preamble": importPreamble,
 	}
@@ -181,6 +181,7 @@ func TestScanDumpRefusesClientCommands(t *testing.T) {
 		{"values malformed hex", "INSERT INTO t VALUES (X'gg');\n", "literal"},
 		{"values missing", "INSERT INTO t;\n", "literal"},
 		{"values incomplete", "INSERT INTO t VALUES (1\n", "literal"},
+		{"default regexp alias udf", "CREATE TABLE t (x INT DEFAULT 1 RLIKE sys_eval('touch /tmp/x'));\n", "DEFAULT"},
 		{"default arithmetic udf", "CREATE TABLE t (x INT DEFAULT 1+sys_eval('touch /tmp/x'));\n", "DEFAULT"},
 		{"default boolean udf", "CREATE TABLE t (x INT DEFAULT 1 OR sys_eval('touch /tmp/x'));\n", "DEFAULT"},
 		{"default signed udf", "CREATE TABLE t (x INT DEFAULT -sys_eval('touch /tmp/x'));\n", "DEFAULT"},
