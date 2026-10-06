@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -123,14 +124,20 @@ const mariadbSample = "/*M!999999\\- enable the sandbox mode */ \n" +
 func TestScanDumpAcceptsDumps(t *testing.T) {
 	longValue := strings.Repeat(`x\'y; system \\! `, 1<<16) // ~1 MiB in one value
 	cases := map[string]string{
-		"mysqldump":               mysqldumpSample,
-		"mysqldump crlf":          strings.ReplaceAll(mysqldumpSample, "\n", "\r\n"),
-		"mariadb-dump":            mariadbSample,
-		"very long line":          "INSERT INTO `wp_postmeta` VALUES (1,'" + longValue + "');\n-- Dump completed\n",
-		"no final newline":        "INSERT INTO t VALUES (1)",
-		"comment-only line":       "  -- system id\n# source x.sql\n/* \\! id */\nINSERT INTO t VALUES (1);\n",
-		"site database qualified": "INSERT INTO wp_acme.wp_posts VALUES (1);\nDROP TABLE IF EXISTS `wp_acme`.`wp_old`;\n",
-		"import preamble":         importPreamble,
+		"mysqldump":                    mysqldumpSample,
+		"mysqldump crlf":               strings.ReplaceAll(mysqldumpSample, "\n", "\r\n"),
+		"mariadb-dump":                 mariadbSample,
+		"very long line":               "INSERT INTO `wp_postmeta` VALUES (1,'" + longValue + "');\n-- Dump completed\n",
+		"no final newline":             "INSERT INTO t VALUES (1)",
+		"comment-only line":            "  -- system id\n# source x.sql\n/* \\! id */\nINSERT INTO t VALUES (1);\n",
+		"site database qualified":      "INSERT INTO wp_acme.wp_posts VALUES (1);\nDROP TABLE IF EXISTS `wp_acme`.`wp_old`;\n",
+		"literal types":                "INSERT INTO t (a,`b`,c) VALUES (-1,+ 2,1.2e-3),(NULL,0xabcDEF,0b101),(X'1234',b'01',_binary'abc'),(_utf8mb4'it''s',N'national',\"a\"\"b\");\nREPLACE INTO t VALUES (.1,1.,-2E+3);\n",
+		"large hex":                    "INSERT INTO t VALUES (0x" + strings.Repeat("ab", 1<<18) + ");\n",
+		"literal comments":             "INSERT INTO t /* gap */ VALUES /* gap */ (1,/*!40101 NULL */, /* gap */ _binary'foo'),(2,'DIRECTORY sys_eval(1)');\n",
+		"repeated variable references": "DELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON t FOR EACH ROW BEGIN " + strings.Repeat("SET NEW.x=@v; ", 10000) + " END;;\nDELIMITER ;\n",
+		"ordinary defaults":            "CREATE TABLE t (a INT DEFAULT -1,b TEXT DEFAULT 'sys_eval(1)',c TIMESTAMP DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n",
+
+		"import preamble": importPreamble,
 	}
 	for name, dump := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -150,6 +157,38 @@ func TestScanDumpRefusesClientCommands(t *testing.T) {
 	cases := []struct {
 		name, dump, want string
 	}{
+		{"doubled backtick insert", "INSERT INTO `other``db`.`t` VALUES (1);\n", "doubled backtick"},
+		{"doubled backtick replace", "REPLACE INTO `other``db`.`t` VALUES (1);\n", "doubled backtick"},
+		{"doubled backtick create", "CREATE TABLE `other``db`.`t` (x INT);\n", "doubled backtick"},
+		{"data directory", "CREATE TABLE t (x INT) ENGINE=MyISAM DATA DIRECTORY='/tmp/review';\n", "DIRECTORY"},
+		{"index directory", "CREATE TABLE t (x INT) ENGINE=MyISAM INDEX DIRECTORY='/tmp/review';\n", "DIRECTORY"},
+		{"comment data directory", "CREATE TABLE t (x INT) DATA/* gap */DIRECTORY='/tmp/review';\n", "DIRECTORY"},
+		{"conditional index directory", "CREATE TABLE t (x INT) /*!50100 INDEX DIRECTORY='/tmp/review' */;\n", "DIRECTORY"},
+		{"values udf", "INSERT INTO t VALUES (sys_eval('touch /tmp/x'));\n", "literal"},
+		{"replace udf", "REPLACE INTO t VALUES (sys_exec('touch /tmp/x'));\n", "literal"},
+		{"values quoted udf", "INSERT INTO t VALUES (`sys_eval`('touch /tmp/x'));\n", "literal"},
+		{"default udf", "CREATE TABLE t (x INT DEFAULT (sys_eval('touch /tmp/x')));\n", "DEFAULT"},
+		{"generated udf", "CREATE TABLE t (x INT AS (sys_eval('touch /tmp/x')));\n", "generated"},
+		{"values identifier", "INSERT INTO t VALUES (some_column);\n", "literal"},
+		{"values operator", "INSERT INTO t VALUES (1+2);\n", "literal"},
+		{"values subquery", "INSERT INTO t VALUES ((SELECT 1));\n", "literal"},
+		{"values variable", "INSERT INTO t VALUES (@v);\n", "literal"},
+		{"values function conditional", "INSERT INTO t VALUES (/*!40101 sys_eval('touch /tmp/x') */);\n", "literal"},
+		{"values suffix udf", "INSERT INTO t VALUES (1) ON DUPLICATE KEY UPDATE x=sys_eval('touch /tmp/x');\n", "literal"},
+		{"values insert select", "INSERT INTO t SELECT sys_eval(1);\n", "literal"},
+		{"values empty", "INSERT INTO t VALUES ();\n", "literal"},
+		{"values adjacent expression", "INSERT INTO t VALUES ('x' sys_eval('touch /tmp/x'));\n", "literal"},
+		{"values malformed hex", "INSERT INTO t VALUES (X'gg');\n", "literal"},
+		{"values missing", "INSERT INTO t;\n", "literal"},
+		{"values incomplete", "INSERT INTO t VALUES (1\n", "literal"},
+		{"default arithmetic udf", "CREATE TABLE t (x INT DEFAULT 1+sys_eval('touch /tmp/x'));\n", "DEFAULT"},
+		{"default boolean udf", "CREATE TABLE t (x INT DEFAULT 1 OR sys_eval('touch /tmp/x'));\n", "DEFAULT"},
+		{"default signed udf", "CREATE TABLE t (x INT DEFAULT -sys_eval('touch /tmp/x'));\n", "DEFAULT"},
+		{"data versioned gap", "CREATE TABLE t (x INT) DATA /*!50100 DIRECTORY */='/tmp/review';\n", "DIRECTORY"},
+		{"index comment gap", "CREATE TABLE t (x INT) INDEX/**/DIRECTORY='/tmp/review';\n", "DIRECTORY"},
+		{"variable reference cap", "SET @m=@@sql_mode;\nDELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON t FOR EACH ROW BEGIN " + variableReferences(49) + " END;;\nDELIMITER ;\nSET sql_mode=@m;\n", "sql_mode"},
+		{"saved variable cap", savedVariables(49) + "SET @m=@@sql_mode;\nSET sql_mode=@m;\n", "sql_mode"},
+
 		{"backslash system", `\! id`, `"\\!"`},
 		{"backslash system after whitespace", " \t\\! id", `"\\!"`},
 		{"backslash system mid line", "INSERT INTO t VALUES (1); \\! id\n", `"\\!"`},
@@ -182,7 +221,7 @@ func TestScanDumpRefusesClientCommands(t *testing.T) {
 		{"drop database", "DROP DATABASE wp_acme;\n", "DROP DATABASE"},
 		{"create database other", "CREATE DATABASE `other_db`;\n", `CREATE DATABASE "other_db"`},
 		{"create user", "CREATE USER x IDENTIFIED BY 'y';\n", "CREATE USER"},
-		{"outfile in insert", "INSERT INTO t SELECT * FROM u INTO OUTFILE '/tmp/x';\n", "OUTFILE"},
+		{"outfile in insert", "INSERT INTO t SELECT * FROM u INTO OUTFILE '/tmp/x';\n", "literal"},
 		{"dumpfile in trigger body", "DELIMITER ;;\nCREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW BEGIN\nSELECT 1 INTO DUMPFILE '/tmp/x';\nEND;;\n", "DUMPFILE"},
 		{"no backslash escapes", "SET sql_mode = 'NO_BACKSLASH_ESCAPES';\n", "NO_BACKSLASH_ESCAPES"},
 		{"no backslash escapes escaped", "/*!40101 SET SQL_MODE='NO\\_BACKSLASH_ESCAPES' */;\n", "backslash in the mode list"},
@@ -203,7 +242,7 @@ func TestScanDumpRefusesClientCommands(t *testing.T) {
 		{"backslash before backtick", "CREATE TABLE `t\\` (x INT);\nSELECT 1 INTO OUTFILE \"/tmp/review-outfile\";\n-- `\n", "backslash inside"},
 		// Neither the client nor the server reads quotes inside /*+ */.
 		{"quote in optimizer hint", "COMMIT /*+ ' */;\nSELECT 1 INTO OUTFILE \"/tmp/review-outfile\";\n-- '\n", "optimizer hint"},
-		{"user variable assigned in insert", "CREATE TEMPORARY TABLE t (x TEXT);\nSET @old=@@sql_mode;\nINSERT INTO t VALUES (@old:='NO_BACKSLASH_ESCAPES');\nSET sql_mode=@old;\n", ":="},
+		{"user variable assigned in insert", "CREATE TEMPORARY TABLE t (x TEXT);\nSET @old=@@sql_mode;\nINSERT INTO t VALUES (@old:='NO_BACKSLASH_ESCAPES');\nSET sql_mode=@old;\n", "literal"},
 		{"saved mode rewritten by trigger", "/*!50003 SET @saved_sql_mode = @@sql_mode */ ;\nDELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON wp_posts FOR EACH ROW SET @saved_sql_mode = 'NO_BACKSLASH_ESCAPES';;\nDELIMITER ;\nSET @saved_sql_mode = @@sql_mode;\nINSERT INTO wp_posts VALUES (1);\nSET sql_mode = @saved_sql_mode;\n", "sql_mode"},
 		{"saved mode rewritten by trigger select into", "SET @m = @@sql_mode;\nDELIMITER ;;\nCREATE TRIGGER x BEFORE INSERT ON wp_posts FOR EACH ROW SELECT 'NO_BACKSLASH_ESCAPES' INTO@m;;\nDELIMITER ;\nINSERT INTO wp_posts VALUES (1);\nSET sql_mode = @m;\n", "sql_mode"},
 		// mysql may compare user variable names without accents.
@@ -221,8 +260,8 @@ func TestScanDumpRefusesClientCommands(t *testing.T) {
 		{"alter table rename", "ALTER TABLE wp_posts RENAME TO other_db.wp_posts;\n", "ALTER TABLE"},
 		// A server older than the version skips the comment without reading
 		// quotes, so it ends at */ while the client is still in the quote.
-		{"comment end inside quote in versioned comment", "INSERT INTO t VALUES (1) /*!99999 ' */, (2); SELECT 1 INTO OUTFILE \"/tmp/x\"; -- ' */;\n", "inside a quote"},
-		{"escaped comment end inside quote in versioned comment", "INSERT INTO t VALUES (1) /*!99999 '\\*/, (2); SELECT 1 INTO OUTFILE \"/tmp/x\"; -- ' */;\n", "inside a quote"},
+		{"comment end inside quote in versioned comment", "INSERT INTO t VALUES (1) /*!99999 ' */, (2); SELECT 1 INTO OUTFILE \"/tmp/x\"; -- ' */;\n", "literal"},
+		{"escaped comment end inside quote in versioned comment", "INSERT INTO t VALUES (1) /*!99999 '\\*/, (2); SELECT 1 INTO OUTFILE \"/tmp/x\"; -- ' */;\n", "literal"},
 		// The client keeps /*! */ in the statement, so it reads the DELIMITER
 		// line as SQL.
 		{"delimiter after versioned comment", "/*!40101 */\nDELIMITER ;;\nINSERT INTO t VALUES (1);\n", "DELIMITER inside a statement"},
@@ -231,14 +270,14 @@ func TestScanDumpRefusesClientCommands(t *testing.T) {
 		// mysql reads a line starting with --x as code, so ' opens a quote.
 		{"dashes without space at statement start", "--x '\nINSERT INTO t VALUES (' \\! id\n');\n", "statement -"},
 		// The client reads --x mid-statement as code, so /* opens a comment.
-		{"dashes without space mid statement", "INSERT INTO t VALUES (1\n--1 /*\n' */ ); SELECT 1 INTO OUTFILE '/tmp/x'; -- '\n", "SELECT"},
+		{"dashes without space mid statement", "INSERT INTO t VALUES (1\n--1 /*\n' */ ); SELECT 1 INTO OUTFILE '/tmp/x'; -- '\n", "literal"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, r := range []io.Reader{strings.NewReader(ok + tc.dump), &oneByteReader{r: strings.NewReader(ok + tc.dump)}} {
+			for i, r := range []io.Reader{strings.NewReader(ok + tc.dump), &oneByteReader{r: strings.NewReader(ok + tc.dump)}} {
 				err := scanDump(r, "wp_acme")
 				if err == nil || !strings.Contains(err.Error(), tc.want) {
-					t.Fatalf("err = %v, want it to contain %q", err, tc.want)
+					t.Errorf("reader %d: err = %v, want it to contain %q", i, err, tc.want)
 				}
 			}
 		})
@@ -271,4 +310,21 @@ func BenchmarkScanDump(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+// Distinct names exercise the cap through the scanner's SQL boundary.
+func variableReferences(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "SET NEW.x=@v%d; ", i)
+	}
+	return b.String()
+}
+
+func savedVariables(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "SET @v%d=@@sql_mode;\n", i)
+	}
+	return b.String()
 }
