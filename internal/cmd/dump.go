@@ -181,13 +181,13 @@ func (w *tailWriter) endsWithTrailer() bool {
 // exportToLocal streams `wp db export -` from site into path on the operator
 // machine. Nothing is written on the server. Ctrl-C cancels the stream and
 // removes the partial file.
-func exportToLocal(rc *RunContext, site *registry.Site, path string) (savedDump, error) {
+func exportToLocal(ctx context.Context, rc *RunContext, site *registry.Site, path string) (savedDump, error) {
 	remoteCmd := dbExportStdout(site.WPPath)
 	if rc.Globals.DryRun {
 		fmt.Fprintf(rc.Stderr, "[dry-run] %s > %s (local)\n", remoteCmd, path)
 		return savedDump{Path: path}, nil
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return saveDump(path, func(w io.Writer) (internalssh.ExecResult, error) {
 		return rc.ExecWPStream(ctx, site, remoteCmd, w)

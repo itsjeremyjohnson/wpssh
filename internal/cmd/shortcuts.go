@@ -45,7 +45,7 @@ func (c *BackupCmd) Run(g *Globals) error {
 	if err != nil {
 		return err
 	}
-	dump, err := exportToLocal(rc, site, path)
+	dump, err := exportToLocal(context.Background(), rc, site, path)
 	if err != nil {
 		return fmt.Errorf("backup failed: %w", err)
 	}

@@ -92,8 +92,11 @@ func TestRawRefusesServerDumps(t *testing.T) {
 		{"tilde word start", []string{"eval-file", "~/x.php"}, "unquoted ~"},
 		{"tilde after equals", []string{"--path=~/www", "option", "get", "home"}, "unquoted ~"},
 		{"tilde after colon", []string{"option", "get", "a:~"}, "unquoted ~"},
-		{"import init-command", []string{"db", "import", "/dev/null", "'--init-command=SELECT 1'"}, "flag --init-command"},
-		{"import tee", []string{"db", "import", "x", "--tee=y"}, "flag --tee"},
+		{"import server file", []string{"db", "import", "/home/acme/backup.sql"}, "refuses `wp db import`"},
+		{"import stdin", []string{"db", "import", "-"}, "refuses `wp db import`"},
+		{"import init-command", []string{"db", "import", "/dev/null", "'--init-command=SELECT 1'"}, "refuses `wp db import`"},
+		{"import tee", []string{"db", "import", "x", "--tee=y"}, "refuses `wp db import`"},
+		{"import after global flag", []string{"--path=/var/www", "DB", "Import", "x.sql"}, "refuses `wp db import`"},
 		{"query tee", []string{"db", "query", "'SELECT 1'", "--tee=/tmp/x"}, "flag --tee"},
 		{"query tee prefix", []string{"db", "query", "'SELECT 1'", "--te=/tmp/x"}, "flag --te"},
 		{"query pager", []string{"db", "query", "'SELECT 1'", "--pager=sh"}, "flag --pager"},
@@ -128,7 +131,7 @@ func TestRawRefusesServerDumps(t *testing.T) {
 		{"size tee", []string{"db", "size", "--tee=x"}, "flag --tee"},
 		{"columns pager", []string{"db", "columns", "wp_posts", "--pager=x"}, "flag --pager"},
 		{"prefix init-command", []string{"db", "prefix", "--init-command=x"}, "flag --init-command"},
-		{"sql alias import tee", []string{"sql", "import", "x", "--tee=y"}, "flag --tee"},
+		{"sql alias import", []string{"sql", "import", "x.sql"}, "refuses `wp db import`"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -161,8 +164,6 @@ func TestRawAllowsSiteManagement(t *testing.T) {
 		{"option", "get", "a~b"},
 		{"db", "query", "'SELECT 1'", "--skip-column-names", "--no-defaults", "--dbuser=u"},
 		{"db", "query", "'--execute=SELECT 1'", "--batch"},
-		{"db", "import", "dump.sql", "--skip-optimization"},
-		{"db", "import", "-"},
 		{"db", "create"},
 		{"db", "reset", "--yes"},
 		{"db", "clean", "--yes", "--dbuser=u", "--dbpass=p"},
@@ -216,8 +217,8 @@ func TestRawRefusesGlobMatchingServerFile(t *testing.T) {
 	}
 }
 
-// TestTypedDBRefusesClientRoutes runs the typed db query and import commands
-// with zero Globals: the refusal must come back before any site is resolved.
+// TestTypedDBRefusesClientRoutes runs the typed db query command with zero
+// Globals: the refusal must come back before any site is resolved.
 func TestTypedDBRefusesClientRoutes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -230,8 +231,6 @@ func TestTypedDBRefusesClientRoutes(t *testing.T) {
 		{"query backslash tee", &DBQueryCmd{SQL: `SELECT 1 \T /tmp/x`}, `\t`},
 		{"query as tee flag", &DBQueryCmd{SQL: "--tee=/tmp/x"}, "flag --tee"},
 		{"query as execute flag", &DBQueryCmd{SQL: "--execute=\\! id"}, `\!`},
-		{"import init-command", &DBImportCmd{File: "--init-command=SELECT 1"}, "flag --init-command"},
-		{"import tee", &DBImportCmd{File: "--tee=y"}, "flag --tee"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

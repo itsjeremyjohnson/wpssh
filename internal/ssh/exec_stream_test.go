@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -18,6 +19,9 @@ import (
 type fakeCommand struct {
 	stdout, stderr string
 	exit           uint32
+	// echoStdin makes the command read stdin to EOF and write it back as
+	// stdout.
+	echoStdin bool
 }
 
 // newFakeSSHClient returns an SSHClient whose pooled connection for cfg/host
@@ -94,6 +98,10 @@ func serveExec(ch ssh.Channel, reqs <-chan *ssh.Request, commands map[string]fak
 		}
 		_ = req.Reply(true, nil)
 		c := commands[payload.Command]
+		if c.echoStdin {
+			in, _ := io.ReadAll(ch)
+			c.stdout = string(in)
+		}
 		_, _ = ch.Write([]byte(c.stdout))
 		_, _ = ch.Stderr().Write([]byte(c.stderr))
 		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{c.exit}))
@@ -138,6 +146,50 @@ func TestExecStream(t *testing.T) {
 		_, err := client.ExecStream(ctx, cfg, host, "dump", failingWriter{})
 		if err == nil || !strings.Contains(err.Error(), "disk full") {
 			t.Fatalf("err = %v, want the writer's error", err)
+		}
+	})
+}
+
+// errAfterReader returns the bytes of r, then err instead of io.EOF.
+type errAfterReader struct {
+	r   io.Reader
+	err error
+}
+
+func (e *errAfterReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if errors.Is(err, io.EOF) {
+		return n, e.err
+	}
+	return n, err
+}
+
+func TestExecWithStdin(t *testing.T) {
+	client, cfg, host := newFakeSSHClient(t, map[string]fakeCommand{
+		"cd '/srv/www' && wp db import -": {echoStdin: true},
+	})
+	ctx := context.Background()
+	const cmd = "cd '/srv/www' && wp db import -"
+
+	t.Run("remote reads the whole stream", func(t *testing.T) {
+		dump := strings.Repeat("INSERT INTO t VALUES (1,'x');\n", 100_000) // ~3 MB, many SSH windows
+		res, err := client.ExecWithStdin(ctx, cfg, host, cmd, strings.NewReader(dump))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.ExitCode != 0 || res.Stdout != dump {
+			t.Fatalf("remote read %d bytes, exit %d; want %d bytes", len(res.Stdout), res.ExitCode, len(dump))
+		}
+	})
+
+	t.Run("reader error ends remote stdin after the bytes read", func(t *testing.T) {
+		stdin := &errAfterReader{r: strings.NewReader("INSERT INTO t VALUES (1);\n"), err: errors.New("dump changed")}
+		res, err := client.ExecWithStdin(ctx, cfg, host, cmd, stdin)
+		if err == nil || !strings.Contains(err.Error(), "dump changed") {
+			t.Fatalf("err = %v, want the reader's error", err)
+		}
+		if res.Stdout != "INSERT INTO t VALUES (1);\n" {
+			t.Fatalf("remote read %q", res.Stdout)
 		}
 	})
 }

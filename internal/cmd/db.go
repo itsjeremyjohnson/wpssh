@@ -28,9 +28,6 @@ type DBCmd struct {
 type DBExportCmd struct {
 	File string `arg:"" optional:"" help:"Local file on this machine (default $WPGO_LOCAL_BACKUP_DIR/<site>/, else ~/wpgo-backups/<site>/); '-' streams to stdout. Nothing is written on the server."`
 }
-type DBImportCmd struct {
-	File string `arg:"" help:"Import file path"`
-}
 type DBQueryCmd struct {
 	SQL string `arg:"" help:"SQL query"`
 }
@@ -68,43 +65,11 @@ func (c *DBExportCmd) Run(g *Globals) error {
 			return err
 		}
 	}
-	dump, err := exportToLocal(rc, site, path)
+	dump, err := exportToLocal(context.Background(), rc, site, path)
 	if err != nil {
 		return err
 	}
 	return printDump(rc, "Exported to:", dump)
-}
-
-func (c *DBImportCmd) Run(g *Globals) error {
-	// wp-cli reads a file argument that starts with -- as a mysql flag.
-	if err := checkWPArgv([]string{"db", "import", c.File}); err != nil {
-		return err
-	}
-	rc, err := NewRunContext(g)
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	site, err := rc.ResolveSite()
-	if err != nil {
-		return err
-	}
-
-	result, err := rc.ExecWP(context.Background(), site,
-		wpcli.New("db", "import").Arg(c.File).Build(site.WPPath))
-	if err != nil {
-		return err
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("wp db import: %s", result.Stderr)
-	}
-	// DB import can change everything — invalidate all categories.
-	rc.CacheInvalidate(site.Alias, []string{
-		cache.CategoryPlugins, cache.CategoryThemes, cache.CategoryCore,
-		cache.CategoryUsers, cache.CategoryOptions, cache.CategorySnapshot,
-	})
-	fmt.Fprint(rc.Stdout, result.Stdout)
-	return nil
 }
 
 func (c *DBQueryCmd) Run(g *Globals) error {

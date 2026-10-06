@@ -174,7 +174,7 @@ wpgo -s mysite core verify-checksums
 wpgo -s mysite db export                 # this machine: ~/wpgo-backups/mysite/mysite_DB_export_<timestamp>_<random>.sql
 wpgo -s mysite db export pre-update.sql  # this machine: ./pre-update.sql
 (umask 077 && wpgo -s mysite db export - > dump.sql)  # stdout; see below
-wpgo -s mysite db import dump.sql
+wpgo -s mysite db import dump.sql --yes --ack-destructive  # dump.sql is on this machine
 wpgo -s mysite db query "SELECT COUNT(*) FROM wp_posts"
 wpgo -s mysite db size
 wpgo -s mysite db tables
@@ -183,6 +183,13 @@ wpgo -s mysite db repair
 ```
 
 `db export` and `backup` run `wp db export -` on the server and stream the dump over SSH to the machine running wpgo. Nothing is written on the server, and wpgo has no option to write one there. The default destination is `${WPGO_LOCAL_BACKUP_DIR:-~/wpgo-backups}/<site>/<site>_DB_<desc>_<timestamp>_<ms>_<random>.sql` (dir 0700, file 0600). wpgo writes to a temp file, fsyncs it and links it into place, then prints the path, byte size and sha256. It never replaces an existing file, including one created while the dump was streaming. If the remote export exits non-zero, the dump is empty, or its last non-empty line does not start with mysqldump's `-- Dump completed`, wpgo deletes the partial file and exits non-zero.
+
+`db import` restores a dump file from the machine running wpgo, or stdin with `-`. It never imports a file stored on the server and refuses a path that does not exist locally. It:
+
+1. reads the site's `DB_NAME`, then copies the dump into a private file next to the backups while checking it. It refuses the dump if the mysql client would run anything but SQL statements of the kinds mysqldump, mariadb-dump and `wp db export` write: a client command such as `\!` (shell), `\.` or `source` (run a file), `\r` or `connect`, `system`, `tee`, `pager`, `use` of another database, a statement other than `SET`, `INSERT`, `REPLACE`, `LOCK`/`UNLOCK TABLES`, `COMMIT`, `CREATE`/`DROP` of a table, view, trigger, routine or event, `ALTER TABLE`, or `CREATE`/`ALTER DATABASE` and `USE` of the site database, `OUTFILE`/`DUMPFILE`, or a `SET` that turns on `NO_BACKSLASH_ESCAPES` or a character set such as GBK or SJIS. Text inside quoted values is data and is not refused. `DELIMITER ;;` is allowed;
+2. prints the site, database, dump and pre-restore backup path, and stops unless both `--yes` and `--ack-destructive` are given;
+3. saves a backup of the current database like `wpgo db export`, to `<backup dir>/<site>/<site>_DB_pre-import_<timestamp>_<random>.sql`, and stops if the backup fails or is empty;
+4. streams the checked copy over SSH into `wp db import -` and deletes the copy. If the import fails, the error names the backup to restore from.
 
 `db export -` applies the same checks and exits non-zero on failure, but it cannot take back bytes already written to stdout, so check the exit status before using the output. Redirect it under `umask 077` so the dump is not world-readable:
 
@@ -303,7 +310,8 @@ Put wp-cli arguments after `--`. `raw` joins them with spaces and the server she
 - `export` (the WXR exporter);
 - `search-replace` or `db search-replace` with any `--export` flag;
 - `db query` whose SQL contains `OUTFILE` or `DUMPFILE` in any case, a mysql client command that runs or writes files (`system`, `tee`, `pager`, `source` or `edit` at the start of a statement, or `\!`, `\T`, `\P`, `\.` or `\e` anywhere, in any case), or the same in an `--execute` value;
-- `db query`, `import`, `create`, `drop`, `reset`, `clean`, `check`, `optimize`, `repair`, `tables`, `size`, `columns` and `prefix` with a flag outside a short per-command allowlist. wp-cli hands extra flags to mysql or mysqlcheck, so this blocks `--tee`, `--pager`, `--init-command`, `--execute` (except on `db query`, where its SQL is checked), `--defaults` and `--defaults-*` (`--no-defaults` passes), and their prefixes. `wpgo db query` and `wpgo db import` apply the same checks;
+- `db import` (use `wpgo db import <local-file>`);
+- `db query`, `create`, `drop`, `reset`, `clean`, `check`, `optimize`, `repair`, `tables`, `size`, `columns` and `prefix` with a flag outside a short per-command allowlist. wp-cli hands extra flags to mysql or mysqlcheck, so this blocks `--tee`, `--pager`, `--init-command`, `--execute` (except on `db query`, where its SQL is checked), `--defaults` and `--defaults-*` (`--no-defaults` passes), and their prefixes. `wpgo db query` applies the same checks;
 - `db cli` and `db connect`;
 - the `--exec` and `--require` globals.
 
