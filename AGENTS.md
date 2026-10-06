@@ -48,3 +48,4 @@
 
 - Never commit SSH keys, passwords, or credentials
 - Use `--stdin` for sensitive input (avoid shell history leaks)
+- `internal/cmd/dumpscan.go` must read a dump exactly as the mysql and mariadb clients do (`add_line` and `read_and_execute` in `client/mysql.cc` of mysql-server and MariaDB/server). Check each lexer rule against both sources, not memory. Where the clients or the server disagree, refuse the construct. For every bypass, add a rejection case to `TestScanDumpRefusesClientCommands`, which runs whole-input and one-byte reads.

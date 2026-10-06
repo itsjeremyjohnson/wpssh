@@ -142,7 +142,7 @@ func printHelpDatabase() {
 	fmt.Println("  wpgo db export pre-update.sql  # this machine: ./pre-update.sql")
 	fmt.Println("  (umask 077 && wpgo db export - > dump.sql) || rm -f dump.sql   # stdout; non-zero exit means partial")
 	fmt.Println("  (dumps stream over SSH and are never written on the server; set WPGO_LOCAL_BACKUP_DIR to change the dir)")
-	fmt.Println("  wpgo db import backup.sql -y --ack-destructive")
+	fmt.Println("  wpgo db import ~/wpgo-backups/<site>/backup.sql -y --ack-destructive   # local file or '-'; backs up first")
 	fmt.Println()
 	fmt.Println("Options/cache/transients:")
 	fmt.Println("  wpgo option list")

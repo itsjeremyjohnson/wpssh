@@ -66,12 +66,11 @@ var mysqlcheckFlags = map[string]dbFlagKind{
 	"silent": dbFlagBool, "verbose": dbFlagBool, "force": dbFlagBool, "use-frm": dbFlagBool,
 }
 
-// dbSubcommandFlags lists, per db subcommand other than export, dump, cli,
-// connect, search and search-replace, the flags it accepts. tables, size,
+// dbSubcommandFlags lists, per db subcommand other than export, dump, import,
+// cli, connect, search and search-replace, the flags it accepts. tables, size,
 // columns and prefix take only their own wp-cli flags.
 var dbSubcommandFlags = map[string]map[string]dbFlagKind{
 	"query":    withFlags(mysqlClientFlags, map[string]dbFlagKind{"execute": dbFlagValue}),
-	"import":   withFlags(mysqlClientFlags, map[string]dbFlagKind{"skip-optimization": dbFlagBool}),
 	"create":   mysqlClientFlags,
 	"drop":     withFlags(mysqlClientFlags, map[string]dbFlagKind{"yes": dbFlagBool}),
 	"reset":    withFlags(mysqlClientFlags, map[string]dbFlagKind{"yes": dbFlagBool}),
@@ -260,6 +259,8 @@ func checkWPInvocation(pos []string, flags []wpFlag) error {
 		return fmt.Errorf("wpgo raw refuses `wp export`: it writes WXR files on the server; nothing may be exported to the server")
 	case at(0) == "db" && (at(1) == "cli" || at(1) == "connect"):
 		return fmt.Errorf("wpgo raw refuses `wp db %s`: the mysql client can write files on the server; use `wpgo db query`", at(1))
+	case at(0) == "db" && at(1) == "import":
+		return fmt.Errorf("wpgo raw refuses `wp db import`: it imports a file on the server; use `wpgo db import <local-file>`, which checks the dump, backs up the database to this machine and streams the dump over SSH")
 	case at(0) == "db" && (at(1) == "export" || at(1) == "dump"):
 		if len(pos) != 3 || pos[2] != "-" {
 			return fmt.Errorf("wpgo raw refuses `wp db %s` without the single file argument '-': it writes the dump on the server; use `wpgo db export` to save it on this machine", at(1))

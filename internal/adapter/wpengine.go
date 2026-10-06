@@ -52,6 +52,14 @@ func (a *WPEngineAdapter) ExecStream(ctx context.Context, client *internalssh.SS
 	return client.ExecStream(execCtx, wpengineClientConfig(site), site.CanonicalHost, wpCmd, stdout)
 }
 
+// ExecStdin runs a pre-built remote shell command on WP Engine with stdin
+// streamed to it, within the same session timeout as Exec.
+func (a *WPEngineAdapter) ExecStdin(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string, stdin io.Reader) (internalssh.ExecResult, error) {
+	execCtx, cancel := wpengineSessionContext(ctx)
+	defer cancel()
+	return client.ExecWithStdin(execCtx, wpengineClientConfig(site), site.CanonicalHost, wpCmd, stdin)
+}
+
 // wpengineSessionContext enforces WP Engine's 10-minute session timeout.
 func wpengineSessionContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	timeout := 10 * time.Minute

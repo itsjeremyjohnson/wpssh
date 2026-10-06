@@ -41,6 +41,11 @@ func (a *StandardAdapter) ExecStream(ctx context.Context, client *internalssh.SS
 	return client.ExecStream(ctx, siteToClientConfig(site), site.CanonicalHost, wpCmd, stdout)
 }
 
+// ExecStdin runs a pre-built remote shell command with stdin streamed to it.
+func (a *StandardAdapter) ExecStdin(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string, stdin io.Reader) (internalssh.ExecResult, error) {
+	return client.ExecWithStdin(ctx, siteToClientConfig(site), site.CanonicalHost, wpCmd, stdin)
+}
+
 // Upload streams a local file to the remote host via stdin.
 // Runs: cat > {remotePath} with the file content piped to stdin.
 func (a *StandardAdapter) Upload(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, localPath, remotePath string) error {
