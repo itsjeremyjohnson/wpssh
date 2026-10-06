@@ -134,16 +134,18 @@ func pipeWith(t *testing.T, content string) *os.File {
 }
 
 // TestRawForwardsPipedStdin runs raw with piped stdin against an SSH server
-// and checks the remote wp command receives it.
+// and checks the remote wp command receives it only when a "-" argument
+// makes wp read it.
 func TestRawForwardsPipedStdin(t *testing.T) {
 	const body = "<!-- wp:paragraph -->\n<p>Updated body.</p>\n<!-- /wp:paragraph -->\n"
 	tests := []struct {
-		name string
-		args []string
+		name      string
+		args      []string
+		wantStdin string
 	}{
-		{"post update dash", []string{"post", "update", "7", "-"}},
-		{"quoted dash", []string{"post", "update", "7", "'-'"}},
-		{"stdin without dash", []string{"db", "query"}},
+		{"post update dash", []string{"post", "update", "7", "-"}, body},
+		{"quoted dash", []string{"post", "update", "7", "'-'"}, body},
+		{"no dash", []string{"option", "get", "home"}, ""},
 	}
 	for _, hostType := range []string{"standard", "wpengine"} {
 		for _, tt := range tests {
@@ -154,18 +156,19 @@ func TestRawForwardsPipedStdin(t *testing.T) {
 					t.Fatalf("raw %q: %v", tt.args, err)
 				}
 				got := execs()
-				if len(got) != 1 || got[0].stdin != body || !strings.HasSuffix(got[0].command, " && wp "+strings.Join(tt.args, " ")) {
-					t.Fatalf("remote got %+v, want one `wp %s` with stdin %q", got, strings.Join(tt.args, " "), body)
+				if len(got) != 1 || got[0].stdin != tt.wantStdin || !strings.HasSuffix(got[0].command, " && wp "+strings.Join(tt.args, " ")) {
+					t.Fatalf("remote got %+v, want one `wp %s` with stdin %q", got, strings.Join(tt.args, " "), tt.wantStdin)
 				}
 			})
 		}
 	}
 }
 
-// TestRawRefusesDashWithoutInput checks that a "-" argument with no input on
-// stdin is refused before anything runs remotely, while db export's "-",
-// which means stdout, still runs.
-func TestRawRefusesDashWithoutInput(t *testing.T) {
+// TestRawRefusesStdinReads checks that raw refuses, before anything runs
+// remotely, a "-" argument with no input on stdin, including one that only
+// WP Engine's second parse turns into "-", and any wp db command that would
+// read SQL from stdin. db export's "-", which means stdout, still runs.
+func TestRawRefusesStdinReads(t *testing.T) {
 	devNull := func(t *testing.T) io.Reader {
 		t.Helper()
 		f, err := os.Open(os.DevNull)
@@ -175,26 +178,35 @@ func TestRawRefusesDashWithoutInput(t *testing.T) {
 		t.Cleanup(func() { f.Close() })
 		return f
 	}
-	empty := func(t *testing.T) io.Reader {
-		t.Helper()
-		return pipeWith(t, "")
+	piped := func(content string) func(*testing.T) io.Reader {
+		return func(t *testing.T) io.Reader {
+			t.Helper()
+			return pipeWith(t, content)
+		}
 	}
+	const outfile = "SELECT 1 INTO OUTFILE '/tmp/dump.sql';"
 	tests := []struct {
-		name    string
-		args    []string
-		stdin   func(*testing.T) io.Reader
-		wantErr string // "" means the command must reach the server
+		name     string
+		hostType string
+		args     []string
+		stdin    func(*testing.T) io.Reader
+		wantErr  string // "" means the command must reach the server
 	}{
-		{"terminal-like stdin", []string{"post", "update", "7", "-"}, devNull, "stdin is a terminal"},
-		{"empty pipe", []string{"post", "update", "7", "-"}, empty, "empty stdin"},
-		{"empty pipe quoted dash", []string{"post", "update", "7", "'-'"}, empty, "empty stdin"},
-		{"no stdin", []string{"post", "update", "7", "-"}, func(*testing.T) io.Reader { return nil }, "stdin is a terminal"},
-		{"db export to stdout", []string{"db", "export", "-"}, devNull, ""},
-		{"no dash, empty pipe", []string{"option", "get", "home"}, empty, ""},
+		{"terminal-like stdin", "standard", []string{"post", "update", "7", "-"}, devNull, "stdin is a terminal"},
+		{"empty pipe", "standard", []string{"post", "update", "7", "-"}, piped(""), "empty stdin"},
+		{"empty pipe quoted dash", "standard", []string{"post", "update", "7", "'-'"}, piped(""), "empty stdin"},
+		{"no stdin", "standard", []string{"post", "update", "7", "-"}, func(*testing.T) io.Reader { return nil }, "stdin is a terminal"},
+		{"empty pipe dash after gateway parse", "wpengine", []string{"post", "update", "7", `"'-'"`}, piped(""), "empty stdin"},
+		{"piped SQL to db query", "standard", []string{"db", "query"}, piped(outfile), "without SQL"},
+		{"piped SQL to db query dash", "standard", []string{"db", "query", "-"}, piped(outfile), "on wp db"},
+		{"piped SQL to db import dash", "standard", []string{"sql", "import", "-"}, piped(outfile), "on wp db"},
+		{"piped SQL to db import after gateway parse", "wpengine", []string{"db", "'import -'"}, piped(outfile), "on wp db"},
+		{"db export to stdout", "standard", []string{"db", "export", "-"}, devNull, ""},
+		{"no dash, empty pipe", "standard", []string{"option", "get", "home"}, piped(""), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			execs := sshSite(t, "standard")
+			execs := sshSite(t, tt.hostType)
 			err := (&RawCmd{Args: tt.args}).runWithIO(&Globals{Site: "site", NoCache: true}, tt.stdin(t))
 			got := execs()
 			if tt.wantErr == "" {
@@ -205,6 +217,38 @@ func TestRawRefusesDashWithoutInput(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) || len(got) != 0 {
 				t.Fatalf("raw %q: err = %v, remote got %+v; want refusal %q before anything runs", tt.args, err, got, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestRawDryRunLeavesStdin checks that dry-run prints a "-" command without
+// reading stdin or refusing for missing input.
+func TestRawDryRunLeavesStdin(t *testing.T) {
+	args := []string{"post", "update", "7", "-"}
+	for _, tt := range []struct {
+		name  string
+		stdin string
+		piped bool
+	}{{"piped body", "body", true}, {"no stdin", "", false}} {
+		t.Run(tt.name, func(t *testing.T) {
+			execs := sshSite(t, "standard")
+			var stdin io.Reader
+			if tt.piped {
+				stdin = pipeWith(t, tt.stdin)
+			}
+			if err := (&RawCmd{Args: args}).runWithIO(&Globals{Site: "site", NoCache: true, DryRun: true}, stdin); err != nil {
+				t.Fatalf("dry-run raw %q: %v", args, err)
+			}
+			if got := execs(); len(got) != 0 {
+				t.Fatalf("dry-run sent %+v", got)
+			}
+			if stdin == nil {
+				return
+			}
+			left, err := io.ReadAll(stdin)
+			if err != nil || string(left) != tt.stdin {
+				t.Fatalf("stdin left = %q, %v; want %q unread", left, err, tt.stdin)
 			}
 		})
 	}
