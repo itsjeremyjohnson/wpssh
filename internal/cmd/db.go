@@ -76,6 +76,10 @@ func (c *DBExportCmd) Run(g *Globals) error {
 }
 
 func (c *DBImportCmd) Run(g *Globals) error {
+	// wp-cli reads a file argument that starts with -- as a mysql flag.
+	if err := checkWPArgv([]string{"db", "import", c.File}); err != nil {
+		return err
+	}
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err
@@ -104,7 +108,7 @@ func (c *DBImportCmd) Run(g *Globals) error {
 }
 
 func (c *DBQueryCmd) Run(g *Globals) error {
-	if err := checkSQLNoFileWrite(c.SQL); err != nil {
+	if err := checkWPArgv([]string{"db", "query", c.SQL}); err != nil {
 		return err
 	}
 	rc, err := NewRunContext(g)

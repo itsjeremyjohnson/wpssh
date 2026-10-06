@@ -37,13 +37,81 @@ var wpValueFlags = map[string]bool{
 	"require": true, "exec": true, "context": true,
 }
 
+// dbFlagKind says whether a db subcommand flag may carry a value.
+type dbFlagKind int
+
+const (
+	dbFlagBool dbFlagKind = iota
+	dbFlagValue
+)
+
+// mysqlClientFlags and mysqlcheckFlags are the flags the db subcommands that
+// run mysql or mysqlcheck accept besides wpGlobalFlags and --no-defaults.
+// wp-cli forwards unknown flags to the client, which also accepts unambiguous
+// prefixes and option-file routes, so only these exact names pass: --tee,
+// --pager, --init-command, --execute, --defaults* and every prefix of them
+// are refused.
+var mysqlClientFlags = map[string]dbFlagKind{
+	"dbuser": dbFlagValue, "dbpass": dbFlagValue, "default-character-set": dbFlagValue,
+	"skip-sql-mode-compat": dbFlagBool, "skip-column-names": dbFlagBool, "column-names": dbFlagBool,
+	"batch": dbFlagBool, "raw": dbFlagBool, "silent": dbFlagBool, "vertical": dbFlagBool,
+	"table": dbFlagBool, "html": dbFlagBool, "xml": dbFlagBool, "binary-as-hex": dbFlagBool,
+	"show-warnings": dbFlagBool, "unbuffered": dbFlagBool, "force": dbFlagBool, "verbose": dbFlagBool,
+}
+
+var mysqlcheckFlags = map[string]dbFlagKind{
+	"dbuser": dbFlagValue, "dbpass": dbFlagValue, "default-character-set": dbFlagValue,
+	"auto-repair": dbFlagBool, "check-upgrade": dbFlagBool, "check-only-changed": dbFlagBool,
+	"extended": dbFlagBool, "fast": dbFlagBool, "medium-check": dbFlagBool, "quick": dbFlagBool,
+	"silent": dbFlagBool, "verbose": dbFlagBool, "force": dbFlagBool, "use-frm": dbFlagBool,
+}
+
+// dbSubcommandFlags lists, per db subcommand other than export, dump, cli,
+// connect, search and search-replace, the flags it accepts. tables, size,
+// columns and prefix take only their own wp-cli flags.
+var dbSubcommandFlags = map[string]map[string]dbFlagKind{
+	"query":    withFlags(mysqlClientFlags, map[string]dbFlagKind{"execute": dbFlagValue}),
+	"import":   withFlags(mysqlClientFlags, map[string]dbFlagKind{"skip-optimization": dbFlagBool}),
+	"create":   mysqlClientFlags,
+	"drop":     withFlags(mysqlClientFlags, map[string]dbFlagKind{"yes": dbFlagBool}),
+	"reset":    withFlags(mysqlClientFlags, map[string]dbFlagKind{"yes": dbFlagBool}),
+	"clean":    withFlags(mysqlClientFlags, map[string]dbFlagKind{"yes": dbFlagBool}),
+	"check":    mysqlcheckFlags,
+	"optimize": mysqlcheckFlags,
+	"repair":   mysqlcheckFlags,
+	"tables": {
+		"scope": dbFlagValue, "network": dbFlagBool, "all-tables-with-prefix": dbFlagBool,
+		"all-tables": dbFlagBool, "format": dbFlagValue,
+	},
+	"size": {
+		"size_format": dbFlagValue, "tables": dbFlagBool, "human-readable": dbFlagBool,
+		"format": dbFlagValue, "scope": dbFlagValue, "network": dbFlagBool, "decimals": dbFlagValue,
+		"all-tables": dbFlagBool, "all-tables-with-prefix": dbFlagBool, "order": dbFlagValue,
+		"orderby": dbFlagValue,
+	},
+	"columns": {"format": dbFlagValue},
+	"prefix":  {},
+}
+
+func withFlags(base, extra map[string]dbFlagKind) map[string]dbFlagKind {
+	m := make(map[string]dbFlagKind, len(base)+len(extra))
+	for k, v := range base {
+		m[k] = v
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return m
+}
+
 // wpFlag is one --name[=value] or -n[=value] argument as wp-cli reads it.
 // name is lowercased with any "no-" prefix removed; negated records that
-// prefix.
+// prefix and hasValue records an "=".
 type wpFlag struct {
-	name    string
-	value   string
-	negated bool
+	name     string
+	value    string
+	negated  bool
+	hasValue bool
 }
 
 // wpReading is one way wp-cli versions may split an argv. checkWPArgv refuses
@@ -79,7 +147,7 @@ func parseWPArgs(args []string, r wpReading) (positional []string, flags []wpFla
 			name = strings.ToLower(name)
 			negated := strings.HasPrefix(name, "no-")
 			name = strings.TrimPrefix(name, "no-")
-			flags = append(flags, wpFlag{name: name, value: value, negated: negated})
+			flags = append(flags, wpFlag{name: name, value: value, negated: negated, hasValue: hasValue})
 			skipNext = r.spaceValues && !hasValue && wpValueFlags[name]
 		default:
 			positional = append(positional, strings.ToLower(a))
@@ -209,6 +277,29 @@ func checkWPInvocation(pos []string, flags []wpFlag) error {
 				}
 			}
 		}
+	case at(0) == "db" && dbSubcommandFlags[at(1)] != nil:
+		allowed := dbSubcommandFlags[at(1)]
+		for _, f := range flags {
+			if wpGlobalFlags[f.name] || (f.name == "defaults" && f.negated) {
+				continue
+			}
+			kind, ok := allowed[f.name]
+			if !ok || f.negated || (kind == dbFlagBool && f.hasValue) {
+				return fmt.Errorf("refusing `wp db %s` flag --%s: wp-cli hands it to the mysql client, which can write or run files on the server", at(1), f.name)
+			}
+			if f.name == "execute" {
+				if err := checkSQLClientCommands(f.value); err != nil {
+					return err
+				}
+			}
+		}
+		if at(1) == "query" {
+			for _, sql := range pos[2:] {
+				if err := checkSQLClientCommands(sql); err != nil {
+					return err
+				}
+			}
+		}
 	case at(0) == "search-replace" || (at(0) == "db" && at(1) == "search-replace"):
 		for _, f := range flags {
 			if f.name == "export" {
@@ -224,8 +315,9 @@ func checkWPInvocation(pos []string, flags []wpFlag) error {
 // backslash escapes. It returns an error for anything that would make the
 // shell do more than pass literal words: an unquoted control operator,
 // redirection, newline, comment, subshell or brace, a $ or backtick outside
-// single quotes, a line continuation, or an unbalanced quote. Unquoted glob
-// characters are passed through; they only match existing server files.
+// single quotes, a line continuation, an unbalanced quote, an unquoted glob
+// character (*, ? or [), or an unquoted ~ at the start of a word or after =
+// or :, where bash expands it.
 func shellWords(line string) ([]string, error) {
 	var words []string
 	var cur strings.Builder
@@ -284,6 +376,10 @@ func shellWords(line string) ([]string, error) {
 			inWord = true
 		case c == '#' && !inWord:
 			return nil, errors.New("unquoted # starts a comment")
+		case c == '*' || c == '?' || c == '[':
+			return nil, fmt.Errorf("unquoted %q matches server file names", c)
+		case c == '~' && (!inWord || line[i-1] == '=' || line[i-1] == ':'):
+			return nil, errors.New("unquoted ~ expands to a home directory")
 		case strings.IndexByte(";&|<>()$`{}\n", c) >= 0:
 			return nil, fmt.Errorf("unquoted %q is shell syntax", c)
 		default:
@@ -305,6 +401,40 @@ func checkSQLNoFileWrite(sql string) error {
 	for _, kw := range []string{"OUTFILE", "DUMPFILE"} {
 		if strings.Contains(upper, kw) {
 			return fmt.Errorf("refusing SQL containing %s: SELECT ... INTO %s writes a file on the database server; take backups with `wpgo db export`", kw, kw)
+		}
+	}
+	return nil
+}
+
+// sqlClientCommands are the mysql client's long-form commands that read,
+// write or run files. The client recognizes them at the start of a statement.
+var sqlClientCommands = []string{"system", "tee", "pager", "source", "edit"}
+
+// sqlClientShortCommands are the backslash forms of the client commands that
+// read, write or run files: system, tee, pager, source and edit. The client
+// recognizes them anywhere in a line.
+var sqlClientShortCommands = []string{`\!`, `\t`, `\p`, `\.`, `\e`}
+
+// checkSQLClientCommands refuses SQL that would make the mysql client run a
+// shell command, read a file, or write its output to a file. It checks every
+// line and every statement in a line, in any case, and also refuses a
+// harmless match inside a string literal.
+func checkSQLClientCommands(sql string) error {
+	lower := strings.ToLower(sql)
+	for _, short := range sqlClientShortCommands {
+		if strings.Contains(lower, short) {
+			return fmt.Errorf("refusing SQL containing the mysql client command %s: it can run or write files on the server", short)
+		}
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		for _, stmt := range strings.Split(line, ";") {
+			stmt = strings.TrimLeft(stmt, " \t\r\v\f")
+			for _, cmd := range sqlClientCommands {
+				rest, ok := strings.CutPrefix(stmt, cmd)
+				if ok && (rest == "" || strings.IndexByte(" \t\r\v\f;", rest[0]) >= 0) {
+					return fmt.Errorf("refusing SQL with the mysql client command %q at the start of a statement: it can run or write files on the server", cmd)
+				}
+			}
 		}
 	}
 	return nil

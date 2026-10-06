@@ -298,17 +298,20 @@ wpgo -s mysite raw -- post meta update 7 title "'Spring cleaning tips'"
 
 Put wp-cli arguments after `--`. `raw` joins them with spaces and the server shell parses that line, so quote any argument that holds spaces or shell characters, in single quotes. Before connecting, `raw` refuses:
 
-- shell syntax outside single quotes: `;`, `&`, `|`, `<`, `>`, a newline, `(`, `)`, `{`, `}`, a leading `#`, `$` or a backtick (also inside double quotes), a line continuation, or an unbalanced quote;
+- shell syntax outside single quotes: `;`, `&`, `|`, `<`, `>`, a newline, `(`, `)`, `{`, `}`, a leading `#`, `$` or a backtick (also inside double quotes), a line continuation, an unbalanced quote, the glob characters `*`, `?` and `[`, or a `~` at the start of a word or after `=` or `:`. Quote or backslash-escape them to pass them literally;
 - `db export` (or `db dump`) with a file argument other than `-`, with no file argument, with a flag outside a short mysqldump allowlist (blocks `--result-file`, `--tab`, their prefixes and `--defaults`), or with a `--tables` or `--exclude_tables` entry that starts with `-`. Use `wpgo db export`;
 - `export` (the WXR exporter);
 - `search-replace` or `db search-replace` with any `--export` flag;
-- `db query` whose SQL contains `OUTFILE` or `DUMPFILE` in any case. `wpgo db query` applies the same check;
+- `db query` whose SQL contains `OUTFILE` or `DUMPFILE` in any case, a mysql client command that runs or writes files (`system`, `tee`, `pager`, `source` or `edit` at the start of a statement, or `\!`, `\T`, `\P`, `\.` or `\e` anywhere, in any case), or the same in an `--execute` value;
+- `db query`, `import`, `create`, `drop`, `reset`, `clean`, `check`, `optimize`, `repair`, `tables`, `size`, `columns` and `prefix` with a flag outside a short per-command allowlist. wp-cli hands extra flags to mysql or mysqlcheck, so this blocks `--tee`, `--pager`, `--init-command`, `--execute` (except on `db query`, where its SQL is checked), `--defaults` and `--defaults-*` (`--no-defaults` passes), and their prefixes. `wpgo db query` and `wpgo db import` apply the same checks;
 - `db cli` and `db connect`;
 - the `--exec` and `--require` globals.
 
 `sql` counts as `db`, and any run of `--` delimiters is skipped. On WP Engine, whose gateway parses each word a second time, `raw` checks that second layer too.
 
 `eval` and `eval-file` are the one exception: `raw` checks only their shell syntax, never their PHP, and allows `--exec` and `--require` with them. PHP can write files on the server, so take backups and exports with `wpgo db export`, never with `eval`.
+
+These checks stop agents and operators from writing dumps on the server by accident or in passing. `eval` and `eval-file` are the deliberate escape hatch. The checks are not a sandbox against an operator who sets out to get around them.
 
 ### Shortcut Commands
 
