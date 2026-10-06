@@ -46,7 +46,14 @@ import (
 //     in the dump, trigger and routine bodies included, mentions it;
 //   - a table or other object name qualified with a database other than the
 //     target;
-//   - OUTFILE or DUMPFILE outside quotes, which write files on the server.
+//   - OUTFILE, DUMPFILE, DATA DIRECTORY or INDEX DIRECTORY outside quotes,
+//     which write files on the server;
+//   - INSERT/REPLACE bodies other than literal VALUES tuples, and generated
+//     columns or nonliteral defaults, which may invoke server functions.
+//
+// Doubled backticks are refused rather than splitting one server identifier
+// into multiple tokens. Variable tracking is capped; exceeding the cap makes
+// saved session variables untrusted.
 //
 // DELIMITER at the start of a line between statements is allowed;
 // mysqldump writes DELIMITER ;; around triggers and routines.
@@ -342,6 +349,10 @@ func (s *dumpScanner) quoted(c byte) error {
 			return errors.New("*/ inside a quote within a /*! comment: a server that skips the comment ends it there")
 		}
 		s.stmt.quoteText([]byte{'\\', e})
+	case c == s.quote && s.quote == '`' && s.next('`'):
+		return errors.New("doubled backtick in a quoted identifier: refusing ambiguous name tokenization")
+	case c == s.quote && s.quote != '`' && s.next(s.quote):
+		s.stmt.quoteText([]byte{c, c})
 	case c == s.quote:
 		s.state, s.prev = stCode, c
 		s.stmt.endQuote()
@@ -590,9 +601,14 @@ type stmtCheck struct {
 	err      error
 	// vars persists across statements. varRefs are the user variables the
 	// statement mentions, and setVars those checkSet accounted for.
-	vars    *userVars
-	varRefs []string
-	setVars map[string]bool
+	vars         *userVars
+	varRefs      map[string]bool
+	setVars      map[string]bool
+	values       *dumpValues
+	table        bool
+	tailWord     string
+	defaultValue bool
+	defaultTail  bool
 }
 
 // userVars tracks which user variables still hold the value of the system
@@ -614,7 +630,17 @@ func (u *userVars) trusted(name, sysvar string) bool {
 // userVar records that the statement mentions a user variable; "" stands for
 // one this scanner cannot name.
 func (c *stmtCheck) userVar(name string) {
-	c.varRefs = append(c.varRefs, name)
+	if c.varRefs == nil {
+		c.varRefs = map[string]bool{}
+	}
+	if c.varRefs[name] {
+		return
+	}
+	if len(c.varRefs) >= maxHeadTokens {
+		c.vars.all = true // Too many distinct references: trust no saved variable.
+		return
+	}
+	c.varRefs[name] = true
 }
 
 func (c *stmtCheck) codeByte(b byte) {
@@ -623,11 +649,16 @@ func (c *stmtCheck) codeByte(b byte) {
 		return
 	}
 	c.started = true
-	if c.accepted {
+	if c.accepted && c.values != nil {
+		c.refuse(c.values.codeByte(b))
 		return
 	}
 	word := isWordByte(b) || b == '@' || b == '.'
 	if c.curKind == 'w' && word {
+		if len(c.cur) >= maxStatementHead {
+			c.refuse(errors.New("statement word too long to check"))
+			return
+		}
 		c.cur = append(c.cur, b)
 		return
 	}
@@ -639,7 +670,13 @@ func (c *stmtCheck) codeByte(b byte) {
 	c.push(sqlToken{kind: 'p', text: string(b)})
 }
 
-func (c *stmtCheck) space() { c.flush() }
+func (c *stmtCheck) space() {
+	if c.accepted && c.values != nil {
+		c.refuse(c.values.space())
+		return
+	}
+	c.flush()
+}
 
 func (c *stmtCheck) startQuote(q byte, dead bool) {
 	c.flush()
@@ -647,12 +684,22 @@ func (c *stmtCheck) startQuote(q byte, dead bool) {
 		return
 	}
 	c.started = true
-	if !c.accepted {
-		c.curKind, c.cur = q, c.cur[:0]
+	if c.accepted && c.values != nil {
+		c.refuse(c.values.startQuote(q))
+		return
 	}
+	c.curKind, c.cur = q, c.cur[:0]
 }
 
 func (c *stmtCheck) quoteText(b []byte) {
+	if c.accepted && c.values != nil {
+		c.refuse(c.values.quoteText(b))
+		return
+	}
+	// Once a DDL head is accepted only token kinds matter for tail guards.
+	if c.accepted {
+		return
+	}
 	if c.curKind == 0 || c.curKind == 'w' {
 		return
 	}
@@ -663,7 +710,13 @@ func (c *stmtCheck) quoteText(b []byte) {
 	c.cur = append(c.cur, b...)
 }
 
-func (c *stmtCheck) endQuote() { c.flush() }
+func (c *stmtCheck) endQuote() {
+	if c.accepted && c.values != nil {
+		c.refuse(c.values.endQuote())
+		return
+	}
+	c.flush()
+}
 
 func (c *stmtCheck) flush() {
 	if c.curKind == 0 {
@@ -675,7 +728,11 @@ func (c *stmtCheck) flush() {
 }
 
 func (c *stmtCheck) push(t sqlToken) {
-	if c.accepted || c.err != nil {
+	if c.err != nil {
+		return
+	}
+	if c.accepted {
+		c.refuse(c.checkTail(t))
 		return
 	}
 	c.tokens = append(c.tokens, t)
@@ -704,22 +761,29 @@ func (c *stmtCheck) refuse(err error) {
 
 // end checks the statement that just ended and resets for the next one.
 func (c *stmtCheck) end() error {
-	c.flush()
+	c.space()
 	if c.err == nil && !c.accepted && len(c.tokens) > 0 {
 		if ok, err := c.checkHead(true); err != nil || !ok {
 			c.refuse(err)
 		}
 	}
-	for _, name := range c.varRefs {
+	if c.err == nil && c.values != nil {
+		c.refuse(c.values.end())
+	}
+	for name := range c.varRefs {
 		switch {
 		case c.setVars[name]:
 		case name == "":
 			c.vars.all = true
 		default:
-			c.vars.poisoned[name] = true
+			if len(c.vars.poisoned) >= maxHeadTokens {
+				c.vars.all = true
+			} else {
+				c.vars.poisoned[name] = true
+			}
 		}
 	}
-	*c = stmtCheck{database: c.database, vars: c.vars, tokens: c.tokens[:0], cur: c.cur[:0], varRefs: c.varRefs[:0], err: c.err}
+	*c = stmtCheck{database: c.database, vars: c.vars, tokens: c.tokens[:0], cur: c.cur[:0], err: c.err}
 	return c.err
 }
 
@@ -742,7 +806,20 @@ func (c *stmtCheck) checkHead(final bool) (bool, error) {
 		for i < len(t) && (t[i].is("LOW_PRIORITY") || t[i].is("DELAYED") || t[i].is("HIGH_PRIORITY") || t[i].is("IGNORE") || t[i].is("INTO")) {
 			i++
 		}
-		return c.checkObjectName(i, final)
+		ok, err := c.checkObjectName(i, final)
+		if !ok || err != nil {
+			return ok, err
+		}
+		if i >= len(t) || nameEnd(t, i) > len(t) {
+			return more()
+		}
+		c.values = &dumpValues{}
+		for _, tok := range t[nameEnd(t, i):] {
+			if err := c.values.token(tok); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
 	case t[0].is("LOCK"), t[0].is("UNLOCK"):
 		if len(t) < 2 {
 			return more()
@@ -803,7 +880,24 @@ func (c *stmtCheck) checkDDL(final bool) (bool, error) {
 			return c.checkAlterTable(name, final)
 		case ddlObjects[kind] && verb == "CREATE":
 			ok, err := c.checkObjectName(name, final)
-			if !ok || err != nil || kind != "TRIGGER" {
+			if !ok || err != nil {
+				return ok, err
+			}
+			if kind == "TABLE" {
+				c.table = true
+				for name < len(c.tokens) && (c.tokens[name].is("IF") || c.tokens[name].is("NOT") || c.tokens[name].is("EXISTS")) {
+					name++
+				}
+				if name >= len(c.tokens) {
+					return false, errors.New("CREATE TABLE without a name")
+				}
+				for _, tok := range c.tokens[nameEnd(c.tokens, name):] {
+					if err := c.checkTail(tok); err != nil {
+						return false, err
+					}
+				}
+			}
+			if kind != "TRIGGER" {
 				return ok, err
 			}
 			return c.checkTriggerTable(name, final)
@@ -828,10 +922,14 @@ func (c *stmtCheck) checkObjectName(i int, final bool) (bool, error) {
 	if i+1 >= len(t) && !final {
 		return false, nil
 	}
-	if i < len(t) {
-		if err := c.checkQualifier(t[i:]); err != nil {
-			return false, err
-		}
+	if i >= len(t) {
+		return false, errors.New("object name is missing")
+	}
+	if err := c.checkQualifier(t[i:]); err != nil {
+		return false, err
+	}
+	if nameEnd(t, i) > len(t) || nameEnd(t, i) == len(t) && !final {
+		return false, nil
 	}
 	return true, nil
 }
@@ -1041,7 +1139,11 @@ func (c *stmtCheck) checkAssignment(a []sqlToken) error {
 		if !ok {
 			return fmt.Errorf("SET %s = %s: a user variable may only be saved from a session system variable", a[0].text, describe(rhs, 4))
 		}
-		c.vars.saved[name] = sysvar
+		if len(c.vars.saved) >= maxHeadTokens && c.vars.saved[name] == "" {
+			c.vars.all = true
+		} else {
+			c.vars.saved[name] = sysvar
+		}
 		c.setVars[name] = true
 		return nil
 	}
@@ -1160,4 +1262,44 @@ func describe(t []sqlToken, n int) string {
 		parts = append(parts, text)
 	}
 	return strings.Join(parts, " ")
+}
+
+// checkTail keeps checking file-writing table options after the bounded DDL
+// head has been released. Comments are whitespace, so cannot split a pair.
+func (c *stmtCheck) checkTail(t sqlToken) error {
+	if (c.tailWord == "DATA" || c.tailWord == "INDEX") && t.is("DIRECTORY") {
+		return errors.New("DATA DIRECTORY and INDEX DIRECTORY write files on the database server")
+	}
+	if c.table {
+		if t.is("GENERATED") || t.is("AS") {
+			return errors.New("generated column expressions are not supported by this dump check")
+		}
+		if c.defaultTail {
+			if t.kind == 'p' && (t.text == "," || t.text == ")") {
+				c.defaultTail = false
+			} else if t.kind == 'p' && strings.ContainsAny(t.text, "+-*/%|&^=<>!") ||
+				t.is("OR") || t.is("AND") || t.is("XOR") || t.is("DIV") || t.is("MOD") || t.is("IN") || t.is("IS") || t.is("LIKE") || t.is("REGEXP") || t.is("BETWEEN") {
+				return errors.New("DEFAULT expressions must be literal: operators may invoke server functions")
+			}
+		}
+		if c.defaultValue {
+			c.defaultValue = false
+			if t.kind == 'p' && (t.text == "+" || t.text == "-") {
+				c.defaultValue = true
+				return nil
+			}
+			if t.kind != '\'' && t.kind != '"' &&
+				!t.is("NULL") && !t.is("CURRENT_TIMESTAMP") && !t.is("CHARSET") && !t.is("CHARACTER") && !t.is("COLLATE") &&
+				!(t.kind == 'w' && dumpNumber.MatchString(t.text)) {
+				return errors.New("DEFAULT expressions may call server functions: only literal defaults or CURRENT_TIMESTAMP are supported")
+			}
+			c.defaultTail = !t.is("CHARSET") && !t.is("CHARACTER") && !t.is("COLLATE")
+		}
+		c.defaultValue = t.is("DEFAULT")
+	}
+	c.tailWord = ""
+	if t.kind == 'w' {
+		c.tailWord = strings.ToUpper(t.text)
+	}
+	return nil
 }
