@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -33,6 +34,11 @@ func (a *StandardAdapter) Capabilities() AdapterCapabilities {
 func (a *StandardAdapter) Exec(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string) (internalssh.ExecResult, error) {
 	cfg := siteToClientConfig(site)
 	return client.Exec(ctx, cfg, site.CanonicalHost, wpCmd)
+}
+
+// ExecStream runs a pre-built remote shell command and streams its stdout.
+func (a *StandardAdapter) ExecStream(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string, stdout io.Writer) (internalssh.ExecResult, error) {
+	return client.ExecStream(ctx, siteToClientConfig(site), site.CanonicalHost, wpCmd, stdout)
 }
 
 // Upload streams a local file to the remote host via stdin.

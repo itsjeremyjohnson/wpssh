@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -38,20 +39,28 @@ func (a *WPEngineAdapter) Capabilities() AdapterCapabilities {
 // Callers (via wpcli.Command.Build) already include the cd + wp prefix.
 // WP Engine's SSH environment places sites at ~/sites/{user}/ when configured.
 func (a *WPEngineAdapter) Exec(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string) (internalssh.ExecResult, error) {
-	cfg := wpengineClientConfig(site)
+	execCtx, cancel := wpengineSessionContext(ctx)
+	defer cancel()
+	return client.Exec(execCtx, wpengineClientConfig(site), site.CanonicalHost, wpCmd)
+}
 
-	// Enforce WP Engine's 10-minute session timeout.
+// ExecStream runs a pre-built remote shell command on WP Engine and streams
+// its stdout, within the same session timeout as Exec.
+func (a *WPEngineAdapter) ExecStream(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string, stdout io.Writer) (internalssh.ExecResult, error) {
+	execCtx, cancel := wpengineSessionContext(ctx)
+	defer cancel()
+	return client.ExecStream(execCtx, wpengineClientConfig(site), site.CanonicalHost, wpCmd, stdout)
+}
+
+// wpengineSessionContext enforces WP Engine's 10-minute session timeout.
+func wpengineSessionContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	timeout := 10 * time.Minute
 	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining < timeout {
+		if remaining := time.Until(deadline); remaining < timeout {
 			timeout = remaining
 		}
 	}
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	return client.Exec(execCtx, cfg, site.CanonicalHost, wpCmd)
+	return context.WithTimeout(ctx, timeout)
 }
 
 // Upload transfers a local file to WP Engine via stdin piping.

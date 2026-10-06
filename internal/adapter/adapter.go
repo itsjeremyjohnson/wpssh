@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/builtbyrobben/wpssh/internal/registry"
@@ -21,6 +22,10 @@ type Adapter interface {
 	// Exec runs a wp-cli command on the remote site.
 	// The wpCmd should be the wp-cli arguments (e.g., "plugin list --format=json").
 	Exec(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string) (internalssh.ExecResult, error)
+
+	// ExecStream runs a wp-cli command like Exec but copies its stdout to
+	// stdout as it arrives; the returned ExecResult has an empty Stdout.
+	ExecStream(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, wpCmd string, stdout io.Writer) (internalssh.ExecResult, error)
 
 	// Upload transfers a local file to the remote host.
 	Upload(ctx context.Context, client *internalssh.SSHClient, site *registry.Site, localPath, remotePath string) error

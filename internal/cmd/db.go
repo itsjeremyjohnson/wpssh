@@ -3,10 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"time"
 
 	"github.com/builtbyrobben/wpssh/internal/cache"
+	"github.com/builtbyrobben/wpssh/internal/registry"
 	"github.com/builtbyrobben/wpssh/internal/wpcli"
 )
 
@@ -27,7 +27,8 @@ type DBCmd struct {
 }
 
 type DBExportCmd struct {
-	File string `arg:"" optional:"" help:"Export file. Default and relative paths go under $WPGO_BACKUP_DIR (default ~/backups/wpgo); paths inside the web root are refused; '-' streams to stdout."`
+	File   string `arg:"" optional:"" help:"Local file on this machine (default $WPGO_LOCAL_BACKUP_DIR/<site>/, else ~/wpgo-backups/<site>/); '-' streams to stdout. With --remote: a file on the server."`
+	Remote bool   `env:"-" help:"Write the dump on the server under $WPGO_BACKUP_DIR (default ~/backups/wpgo) instead of this machine. You must then move it off the server and delete it."`
 }
 type DBImportCmd struct {
 	File string `arg:"" help:"Import file path"`
@@ -48,10 +49,6 @@ type (
 	DBResetCmd    struct{}
 )
 
-// unsafeFilenameChars matches characters replaced in default dump names,
-// mirroring full-backup.sh.
-var unsafeFilenameChars = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
-
 func (c *DBExportCmd) Run(g *Globals) error {
 	rc, err := NewRunContext(g)
 	if err != nil {
@@ -63,6 +60,35 @@ func (c *DBExportCmd) Run(g *Globals) error {
 		return err
 	}
 
+	switch {
+	case c.Remote:
+		return c.runRemote(rc, site)
+	case c.File == "-":
+		result, err := rc.ExecWPStream(context.Background(), site, wpcli.DBExport(site.WPPath, "-", ""), rc.Stdout)
+		if err != nil {
+			return err
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("wp db export: %s", result.Stderr)
+		}
+		return nil
+	}
+
+	path := c.File
+	if path == "" {
+		if path, err = defaultDumpPath(site.Alias, "export", time.Now()); err != nil {
+			return err
+		}
+	}
+	dump, err := exportToLocal(rc, site, path)
+	if err != nil {
+		return err
+	}
+	return printDump(rc, "Exported to:", dump)
+}
+
+// runRemote writes the dump on the server, outside the web root.
+func (c *DBExportCmd) runRemote(rc *RunContext, site *registry.Site) error {
 	defaultName := fmt.Sprintf("%s_DB_%s.sql", unsafeFilenameChars.ReplaceAllString(site.Alias, "_"), time.Now().Format("20060102_150405"))
 	result, err := rc.ExecWP(context.Background(), site, wpcli.DBExport(site.WPPath, c.File, defaultName))
 	if err != nil {

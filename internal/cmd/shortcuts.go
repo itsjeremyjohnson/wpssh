@@ -25,12 +25,39 @@ func (c *HealthCmd) Run(g *Globals) error {
 	})
 }
 
-// BackupCmd creates a named database backup via the embedded full-backup.sh script.
+// BackupCmd creates a named database backup. By default it streams the dump
+// to this machine; with --remote it runs the embedded full-backup.sh on the
+// server.
 type BackupCmd struct {
 	Description string `arg:"" optional:"" help:"Backup description" default:"Manual"`
+	Remote      bool   `env:"-" help:"Write the backup on the server under $WPGO_BACKUP_DIR (default ~/backups/wpgo) instead of this machine. You must then move it off the server and delete it."`
 }
 
 func (c *BackupCmd) Run(g *Globals) error {
+	if c.Remote {
+		return c.runRemote(g)
+	}
+	rc, err := NewRunContext(g)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	site, err := rc.ResolveSite()
+	if err != nil {
+		return err
+	}
+	path, err := defaultDumpPath(site.Alias, c.Description, time.Now())
+	if err != nil {
+		return err
+	}
+	dump, err := exportToLocal(rc, site, path)
+	if err != nil {
+		return fmt.Errorf("backup failed: %w", err)
+	}
+	return printDump(rc, "Backup saved:", dump)
+}
+
+func (c *BackupCmd) runRemote(g *Globals) error {
 	return runScript(g, scripts.ScriptFullBackup, []string{g.Site, c.Description}, func(output string, globals *Globals) error {
 		var result struct {
 			Status   string `json:"status"`

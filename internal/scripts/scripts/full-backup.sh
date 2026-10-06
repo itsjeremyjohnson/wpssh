@@ -1,5 +1,5 @@
 #!/bin/bash
-# full-backup.sh — Named database backup for wpgo.
+# full-backup.sh — Named database backup on the server, used only by `wpgo backup --remote`.
 # Executed via SSH stdin from the WordPress path: bash -s -- <client_name> <description>
 # Writes to ${WPGO_BACKUP_DIR:-$HOME/backups/wpgo} (dir 0700, file 0600) and
 # refuses (exit 64) any target inside the WordPress path, ~/public_html or ~/www.

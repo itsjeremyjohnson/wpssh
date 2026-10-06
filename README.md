@@ -67,6 +67,7 @@ wpgo setup
 | Variable | Description |
 |----------|-------------|
 | `WPGO_SITE` | Default target site alias |
+| `WPGO_LOCAL_BACKUP_DIR` | Local dir for `db export` and `backup` dumps (default `~/wpgo-backups`) |
 
 ### Site Registry
 
@@ -170,14 +171,25 @@ wpgo -s mysite core verify-checksums
 ### db -- Database operations
 
 ```bash
-wpgo -s mysite db export                 # ~/backups/wpgo/mysite_DB_<timestamp>.sql on the server
-wpgo -s mysite db export pre-update.sql  # ~/backups/wpgo/pre-update.sql on the server
+wpgo -s mysite db export                 # this machine: ~/wpgo-backups/mysite/mysite_DB_export_<timestamp>.sql
+wpgo -s mysite db export pre-update.sql  # this machine: ./pre-update.sql
+wpgo -s mysite db export - > dump.sql    # stream to stdout
 wpgo -s mysite db import dump.sql
 wpgo -s mysite db query "SELECT COUNT(*) FROM wp_posts"
 wpgo -s mysite db size
 wpgo -s mysite db tables
 wpgo -s mysite db optimize
 wpgo -s mysite db repair
+```
+
+`db export` and `backup` run `wp db export -` on the server and stream the dump over SSH to the machine running wpgo. Nothing is written on the server. The default destination is `${WPGO_LOCAL_BACKUP_DIR:-~/wpgo-backups}/<site>/` (dir 0700, file 0600). wpgo writes to a temp file, fsyncs and renames it, and prints the path, byte size and sha256. If the remote export fails or the dump is empty or lacks mysqldump's `-- Dump completed` trailer, wpgo deletes the partial file and exits non-zero. It never overwrites an existing file.
+
+`--remote` writes the dump on the server instead, under `${WPGO_BACKUP_DIR:-~/backups/wpgo}` (dir 0700, file 0600), and refuses any target inside the WordPress path, `~/public_html` or `~/www`. Use it only when a local stream is not possible, then move the file off the server and delete it there.
+
+```bash
+wpgo -s mysite db export --remote                 # server: ~/backups/wpgo/mysite_DB_<timestamp>.sql
+wpgo -s mysite db export --remote pre-update.sql  # server: ~/backups/wpgo/pre-update.sql
+wpgo -s mysite backup --remote "Pre-update"       # server: ~/backups/wpgo/ via full-backup.sh
 ```
 
 ### user -- User management
@@ -288,7 +300,7 @@ wpgo -s mysite raw "wp option list"
 ```bash
 wpgo -s mysite health         # Full site health check
 wpgo -s mysite status         # Quick site status overview
-wpgo -s mysite backup         # Database backup to ~/backups/wpgo on the server (dir 0700, file 0600)
+wpgo -s mysite backup         # Database backup streamed to ~/wpgo-backups/mysite/ on this machine
 wpgo -s mysite backup "Pre-update snapshot"  # Backup with description
 wpgo -s mysite update-all -y  # Update core + plugins + themes
 wpgo -s mysite clear-cache    # Full cache clear
