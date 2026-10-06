@@ -104,6 +104,9 @@ func (c *DBImportCmd) Run(g *Globals) error {
 }
 
 func (c *DBQueryCmd) Run(g *Globals) error {
+	if err := checkSQLNoFileWrite(c.SQL); err != nil {
+		return err
+	}
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err

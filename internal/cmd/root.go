@@ -26,7 +26,7 @@ type CLI struct {
 	Config      ConfigCmdGroup   `cmd:"" name:"config" help:"wp-config.php management"`
 	Role        RoleCmd          `cmd:"" help:"Role management"`
 	Maintenance MaintenanceCmd   `cmd:"" help:"Maintenance mode management"`
-	Eval        EvalCmd          `cmd:"" help:"Execute arbitrary PHP"`
+	Eval        EvalCmd          `cmd:"" help:"Execute arbitrary PHP. It can write files on the server; take backups and exports with 'wpgo db export'."`
 	Raw         RawCmd           `cmd:"" help:"Pass-through to wp-cli"`
 
 	// Shortcut commands

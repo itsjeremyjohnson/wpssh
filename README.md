@@ -287,11 +287,21 @@ wpgo -s mysite maintenance disable
 wpgo -s mysite eval "echo get_option('siteurl');"
 ```
 
+`eval` runs any PHP, so it can write files on the server. Take backups and exports with `wpgo db export`, never with `eval`.
+
 ### raw -- Pass-through to wp-cli
 
 ```bash
-wpgo -s mysite raw "wp option list"
+wpgo -s mysite raw -- option list
+wpgo -s mysite raw -- post meta update 7 title "Today's Dental"
 ```
+
+Put wp-cli arguments after `--`. Each argument reaches wp as one quoted word, so the server shell does no expansion, redirection or chaining. `raw` refuses, before connecting, any command that would leave a dump or export on the server:
+
+- `db export` (or `db dump`) with a file argument other than `-`, with no file argument, or with a flag outside a short mysqldump allowlist (blocks `--result-file`, `--tab` and their prefixes). Use `wpgo db export`.
+- `export` (the WXR exporter).
+- `search-replace` or `db search-replace` with any `--export` flag.
+- `db query` whose SQL contains `OUTFILE` or `DUMPFILE` in any case. `wpgo db query` applies the same check.
 
 ### Shortcut Commands
 

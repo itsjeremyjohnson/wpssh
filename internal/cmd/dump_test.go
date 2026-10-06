@@ -279,6 +279,32 @@ func TestSaveDumpKeepsFileCreatedDuringStream(t *testing.T) {
 	}
 }
 
+// TestSaveDumpReportsLeftoverPartial makes the dir read-only mid-stream so
+// the failed dump's temp file cannot be removed; the error must name it.
+func TestSaveDumpReportsLeftoverPartial(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	_, err := saveDump(filepath.Join(dir, "x.sql"), func(w io.Writer) (internalssh.ExecResult, error) {
+		_, _ = io.WriteString(w, "CREATE TABLE wp_po")
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		return internalssh.ExecResult{}, errors.New("connection reset")
+	})
+	left := listFiles(t, dir)
+	if len(left) != 1 {
+		t.Fatalf("dir has %v, want the one partial dump", left)
+	}
+	for _, want := range []string{"connection reset", "could not remove partial dump " + left[0]} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
 func listFiles(t *testing.T, root string) []string {
 	t.Helper()
 	var files []string

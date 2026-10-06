@@ -81,8 +81,9 @@ func defaultDumpPath(alias, desc string, now time.Time) (string, error) {
 // to path, which fails if path already exists, even when another process
 // created it during the stream. If run fails or verifyDump rejects the dump,
 // the temp file is removed and an error is returned. An existing file at path
-// is never replaced.
-func saveDump(path string, run func(io.Writer) (internalssh.ExecResult, error)) (savedDump, error) {
+// is never replaced. If the temp file cannot be removed, the returned error
+// names it, even when the dump was published.
+func saveDump(path string, run func(io.Writer) (internalssh.ExecResult, error)) (_ savedDump, err error) {
 	if _, err := os.Lstat(path); err == nil {
 		return savedDump{}, fmt.Errorf("refusing to overwrite existing file %s", path)
 	}
@@ -92,8 +93,15 @@ func saveDump(path string, run func(io.Writer) (internalssh.ExecResult, error)) 
 		return savedDump{}, fmt.Errorf("create local dump: %w", err)
 	}
 	defer func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		_ = tmp.Close()
+		rerr := os.Remove(tmp.Name())
+		switch {
+		case rerr == nil || errors.Is(rerr, fs.ErrNotExist):
+		case err == nil:
+			err = fmt.Errorf("saved dump to %s, but could not remove temp file %s: %w", path, tmp.Name(), rerr)
+		default:
+			err = errors.Join(err, fmt.Errorf("could not remove partial dump %s: %w", tmp.Name(), rerr))
+		}
 	}()
 
 	hash := sha256.New()
