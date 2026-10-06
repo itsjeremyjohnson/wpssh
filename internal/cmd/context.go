@@ -128,6 +128,20 @@ func (rc *RunContext) ExecWPStream(ctx context.Context, site *registry.Site, wpC
 	return a.ExecStream(ctx, rc.SSHClient, site, wpCmd, stdout)
 }
 
+// ExecWPWithStdin executes a wp-cli command on a site with stdin as its
+// standard input. In dry-run mode it prints the command and reads nothing.
+func (rc *RunContext) ExecWPWithStdin(ctx context.Context, site *registry.Site, wpCmd string, stdin io.Reader) (internalssh.ExecResult, error) {
+	a := adapter.ForSite(site)
+	if rc.Globals.Verbose {
+		fmt.Fprintf(rc.Stderr, "[adapter: %s] %s\n", a.Name(), wpCmd)
+	}
+	if rc.Globals.DryRun {
+		fmt.Fprintf(rc.Stderr, "[dry-run] %s\n", wpCmd)
+		return internalssh.ExecResult{}, nil
+	}
+	return a.ExecWithStdin(ctx, rc.SSHClient, site, wpCmd, stdin)
+}
+
 // CacheGet checks the cache for a stored result. Returns the cached data
 // string or empty string on miss. Handles nil cache gracefully.
 func (rc *RunContext) CacheGet(siteAlias, commandCacheKey string) string {

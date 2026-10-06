@@ -311,6 +311,14 @@ Put wp-cli arguments after `--`. `raw` joins them with spaces and the server she
 
 `eval` and `eval-file` are the one exception: `raw` checks only their shell syntax, never their PHP, and allows `--exec` and `--require` with them. PHP can write files on the server, so take backups and exports with `wpgo db export`, never with `eval`.
 
+When stdin is piped or redirected from a file, `raw` forwards it to wp, so wp-cli's `-` file argument works:
+
+```bash
+wpgo -s mysite raw -- post update 7 - < content.html
+```
+
+`raw` refuses a `-` argument, before connecting, when stdin is a terminal, `/dev/null` or empty: wp would read nothing and write empty content. `db export -` and `db dump -` are exempt, since there `-` means stdout.
+
 These checks stop agents and operators from writing dumps on the server by accident or in passing. `eval` and `eval-file` are the deliberate escape hatch. The checks are not a sandbox against an operator who sets out to get around them.
 
 ### Shortcut Commands
