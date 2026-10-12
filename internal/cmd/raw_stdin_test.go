@@ -199,8 +199,8 @@ func TestRawRefusesStdinReads(t *testing.T) {
 		{"empty pipe dash after gateway parse", "wpengine", []string{"post", "update", "7", `"'-'"`}, piped(""), "empty stdin"},
 		{"piped SQL to db query", "standard", []string{"db", "query"}, piped(outfile), "without SQL"},
 		{"piped SQL to db query dash", "standard", []string{"db", "query", "-"}, piped(outfile), "on wp db"},
-		{"piped SQL to db import dash", "standard", []string{"sql", "import", "-"}, piped(outfile), "on wp db"},
-		{"piped SQL to db import after gateway parse", "wpengine", []string{"db", "'import -'"}, piped(outfile), "on wp db"},
+		{"piped SQL to db import dash", "standard", []string{"sql", "import", "-"}, piped(outfile), "refuses `wp db import`"},
+		{"piped SQL to db import after gateway parse", "wpengine", []string{"db", "'import -'"}, piped(outfile), "refuses `wp db import`"},
 		{"db export to stdout", "standard", []string{"db", "export", "-"}, devNull, ""},
 		{"no dash, empty pipe", "standard", []string{"option", "get", "home"}, piped(""), ""},
 	}
