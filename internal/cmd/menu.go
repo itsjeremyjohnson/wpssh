@@ -1,6 +1,10 @@
 package cmd
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/builtbyrobben/wpssh/internal/wpcli"
+)
 
 // Menu commands
 
@@ -49,33 +53,33 @@ type MenuItemDeleteCmd struct {
 }
 
 func (c *MenuListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "list")
+	return execPassthrough(g, wpcli.New("menu", "list"))
 }
 
 func (c *MenuCreateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "create", c.Name)
+	return execPassthrough(g, wpcli.New("menu", "create"), c.Name)
 }
 
 func (c *MenuDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "delete", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("menu", "delete"), fmt.Sprint(c.ID))
 }
 
 func (c *MenuItemListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "item", "list", c.Menu)
+	return execPassthrough(g, wpcli.New("menu", "item", "list"), c.Menu)
 }
 
 func (c *MenuItemAddPostCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "item", "add-post", c.Menu, fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("menu", "item", "add-post"), c.Menu, fmt.Sprint(c.ID))
 }
 
 func (c *MenuItemAddCustomCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "item", "add-custom", c.Menu, c.Title, c.URL)
+	return execPassthrough(g, wpcli.New("menu", "item", "add-custom"), c.Menu, c.Title, c.URL)
 }
 
 func (c *MenuItemUpdateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "item", "update", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("menu", "item", "update"), fmt.Sprint(c.ID))
 }
 
 func (c *MenuItemDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "menu", "item", "delete", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("menu", "item", "delete"), fmt.Sprint(c.ID))
 }

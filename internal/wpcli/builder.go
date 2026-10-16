@@ -15,7 +15,8 @@ type Command struct {
 	format    string
 }
 
-// New creates a new wp-cli command builder.
+// New creates a new wp-cli command builder for the fixed command words.
+// Build writes parts unescaped; pass user values with Arg.
 func New(parts ...string) *Command {
 	return &Command{
 		parts: parts,
@@ -98,13 +99,19 @@ func (c *Command) Build(wpPath string) string {
 	return b.String()
 }
 
+// Name returns the command words, e.g. "post meta update", without arguments
+// or flags.
+func (c *Command) Name() string {
+	return strings.Join(c.parts, " ")
+}
+
 // CacheKey returns the normalized form for cache lookup:
 // "command:sorted_flags" e.g., "plugin list:--format=json --status=active"
 func (c *Command) CacheKey() string {
 	var parts []string
 
 	// Command parts
-	cmdPart := strings.Join(c.parts, " ")
+	cmdPart := c.Name()
 
 	// Collect all flags into a sorted list
 	var flagParts []string

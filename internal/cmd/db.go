@@ -99,23 +99,23 @@ func (c *DBQueryCmd) Run(g *Globals) error {
 }
 
 func (c *DBSearchCmd) Run(g *Globals) error {
-	return execPassthrough(g, "db", "search", c.Term)
+	return execPassthrough(g, wpcli.New("db", "search"), c.Term)
 }
 
 func (c *DBSizeCmd) Run(g *Globals) error {
-	return execPassthrough(g, "db", "size")
+	return execPassthrough(g, wpcli.New("db", "size"))
 }
 
 func (c *DBTablesCmd) Run(g *Globals) error {
-	return execPassthrough(g, "db", "tables")
+	return execPassthrough(g, wpcli.New("db", "tables"))
 }
 
 func (c *DBPrefixCmd) Run(g *Globals) error {
-	return execPassthrough(g, "db", "prefix")
+	return execPassthrough(g, wpcli.New("db", "prefix"))
 }
 
 func (c *DBCheckCmd) Run(g *Globals) error {
-	return execPassthrough(g, "db", "check")
+	return execPassthrough(g, wpcli.New("db", "check"))
 }
 
 func (c *DBRepairCmd) Run(g *Globals) error {

@@ -1,5 +1,7 @@
 package cmd
 
+import "github.com/builtbyrobben/wpssh/internal/wpcli"
+
 // Role commands
 
 type RoleCmd struct {
@@ -25,15 +27,15 @@ type RoleExistsCmd struct {
 }
 
 func (c *RoleListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "role", "list")
+	return execPassthrough(g, wpcli.New("role", "list"))
 }
 
 func (c *RoleCreateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "role", "create", c.Role, c.DisplayName)
+	return execPassthrough(g, wpcli.New("role", "create"), c.Role, c.DisplayName)
 }
 
 func (c *RoleDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "role", "delete", c.Role)
+	return execPassthrough(g, wpcli.New("role", "delete"), c.Role)
 }
 
 func (c *RoleExistsCmd) Run(g *Globals) error {

@@ -273,17 +273,22 @@ func (c *UserExistsCmd) Run(g *Globals) error {
 }
 
 func (c *UserMetaListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "user", "meta", "list", c.User)
+	return execPassthrough(g, wpcli.New("user", "meta", "list"), c.User)
 }
 
 func (c *UserMetaGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "user", "meta", "get", c.User, c.Key)
+	return execPassthrough(g, wpcli.New("user", "meta", "get"), c.User, c.Key)
 }
 
 func (c *UserMetaUpdateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "user", "meta", "update", c.User, c.Key, c.Value)
+	return execValueWrite(g, valueWrite{
+		cmd:    wpcli.New("user", "meta", "update"),
+		script: userMetaUpdatePHP,
+		call:   "update_user_meta",
+		args:   []string{c.User, c.Key, c.Value},
+	})
 }
 
 func (c *UserMetaDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "user", "meta", "delete", c.User, c.Key)
+	return execPassthrough(g, wpcli.New("user", "meta", "delete"), c.User, c.Key)
 }

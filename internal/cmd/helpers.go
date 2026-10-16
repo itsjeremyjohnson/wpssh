@@ -8,10 +8,9 @@ import (
 	"github.com/builtbyrobben/wpssh/internal/wpcli"
 )
 
-// execPassthrough runs a wp-cli command and prints its stdout directly.
-// Parts are the wp-cli subcommands (e.g., "theme", "status").
-// If the last part is empty, it is omitted (allows optional args).
-func execPassthrough(g *Globals, parts ...string) error {
+// execPassthrough runs cmd with args as escaped positional arguments and
+// prints its stdout directly. Empty args are omitted (allows optional args).
+func execPassthrough(g *Globals, cmd *wpcli.Command, args ...string) error {
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err
@@ -23,21 +22,18 @@ func execPassthrough(g *Globals, parts ...string) error {
 		return err
 	}
 
-	// Filter out empty strings (optional args that weren't provided)
-	var filtered []string
-	for _, p := range parts {
-		if p != "" {
-			filtered = append(filtered, p)
+	for _, a := range args {
+		if a != "" {
+			cmd.Arg(a)
 		}
 	}
 
-	builder := wpcli.New(filtered...)
-	result, err := rc.ExecWP(context.Background(), site, builder.Build(site.WPPath))
+	result, err := rc.ExecWP(context.Background(), site, cmd.Build(site.WPPath))
 	if err != nil {
 		return err
 	}
 	if result.ExitCode != 0 {
-		return fmt.Errorf("wp %s: %s", strings.Join(filtered, " "), result.Stderr)
+		return fmt.Errorf("wp %s: %s", cmd.Name(), result.Stderr)
 	}
 	fmt.Fprint(rc.Stdout, result.Stdout)
 	return nil

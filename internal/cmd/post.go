@@ -143,7 +143,7 @@ func (c *PostGetCmd) Run(g *Globals) error {
 }
 
 func (c *PostUpdateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "post", "update", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("post", "update"), fmt.Sprint(c.ID))
 }
 
 func (c *PostDeleteCmd) Run(g *Globals) error {
@@ -177,17 +177,22 @@ func (c *PostExistsCmd) Run(g *Globals) error {
 }
 
 func (c *PostMetaListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "post", "meta", "list", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("post", "meta", "list"), fmt.Sprint(c.ID))
 }
 
 func (c *PostMetaGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "post", "meta", "get", fmt.Sprint(c.ID), c.Key)
+	return execPassthrough(g, wpcli.New("post", "meta", "get"), fmt.Sprint(c.ID), c.Key)
 }
 
 func (c *PostMetaUpdateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "post", "meta", "update", fmt.Sprint(c.ID), c.Key, c.Value)
+	return execValueWrite(g, valueWrite{
+		cmd:    wpcli.New("post", "meta", "update"),
+		script: postMetaUpdatePHP,
+		call:   "update_post_meta",
+		args:   []string{fmt.Sprint(c.ID), c.Key, c.Value},
+	})
 }
 
 func (c *PostMetaDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "post", "meta", "delete", fmt.Sprint(c.ID), c.Key)
+	return execPassthrough(g, wpcli.New("post", "meta", "delete"), fmt.Sprint(c.ID), c.Key)
 }

@@ -50,55 +50,27 @@ type OptionPluckCmd struct {
 }
 
 func (c *OptionGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "option", "get", c.Key)
+	return execPassthrough(g, wpcli.New("option", "get"), c.Key)
 }
 
 func (c *OptionUpdateCmd) Run(g *Globals) error {
-	rc, err := NewRunContext(g)
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	site, err := rc.ResolveSite()
-	if err != nil {
-		return err
-	}
-
-	result, err := rc.ExecWP(context.Background(), site,
-		wpcli.New("option", "update").Arg(c.Key).Arg(c.Value).Build(site.WPPath))
-	if err != nil {
-		return err
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("wp option update: %s", result.Stderr)
-	}
-	rc.CacheInvalidate(site.Alias, []string{cache.CategoryOptions})
-	fmt.Fprint(rc.Stdout, result.Stdout)
-	return nil
+	return execValueWrite(g, valueWrite{
+		cmd:        wpcli.New("option", "update"),
+		script:     optionUpdatePHP,
+		call:       "update_option",
+		args:       []string{c.Key, c.Value},
+		invalidate: []string{cache.CategoryOptions},
+	})
 }
 
 func (c *OptionAddCmd) Run(g *Globals) error {
-	rc, err := NewRunContext(g)
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-	site, err := rc.ResolveSite()
-	if err != nil {
-		return err
-	}
-
-	result, err := rc.ExecWP(context.Background(), site,
-		wpcli.New("option", "add").Arg(c.Key).Arg(c.Value).Build(site.WPPath))
-	if err != nil {
-		return err
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("wp option add: %s", result.Stderr)
-	}
-	rc.CacheInvalidate(site.Alias, []string{cache.CategoryOptions})
-	fmt.Fprint(rc.Stdout, result.Stdout)
-	return nil
+	return execValueWrite(g, valueWrite{
+		cmd:        wpcli.New("option", "add"),
+		script:     optionAddPHP,
+		call:       "add_option",
+		args:       []string{c.Key, c.Value},
+		invalidate: []string{cache.CategoryOptions},
+	})
 }
 
 func (c *OptionDeleteCmd) Run(g *Globals) error {
@@ -198,5 +170,5 @@ func (c *OptionPatchCmd) Run(g *Globals) error {
 }
 
 func (c *OptionPluckCmd) Run(g *Globals) error {
-	return execPassthrough(g, "option", "pluck", c.Key, c.KeyPath)
+	return execPassthrough(g, wpcli.New("option", "pluck"), c.Key, c.KeyPath)
 }

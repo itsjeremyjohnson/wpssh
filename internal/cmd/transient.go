@@ -31,30 +31,27 @@ type TransientDeleteCmd struct {
 type TransientListCmd struct{}
 
 func (c *TransientGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "transient", "get", c.Key)
+	return execPassthrough(g, wpcli.New("transient", "get"), c.Key)
 }
 
 func (c *TransientSetCmd) Run(g *Globals) error {
-	parts := []string{"transient", "set", c.Key, c.Value}
+	var expiration string
 	if c.Expiration > 0 {
-		parts = append(parts, fmt.Sprint(c.Expiration))
+		expiration = fmt.Sprint(c.Expiration)
 	}
-	return execPassthrough(g, parts...)
+	return execPassthrough(g, wpcli.New("transient", "set"), c.Key, c.Value, expiration)
 }
-
-// Ensure TransientSetCmd uses wpcli correctly — the expiration is a positional arg to wp-cli.
-var _ = wpcli.New // keep import alive for future use
 
 func (c *TransientDeleteCmd) Run(g *Globals) error {
 	if c.All {
-		return execPassthrough(g, "transient", "delete", "--all")
+		return execPassthrough(g, wpcli.New("transient", "delete").BoolFlag("all"))
 	}
 	if c.Expired {
-		return execPassthrough(g, "transient", "delete", "--expired")
+		return execPassthrough(g, wpcli.New("transient", "delete").BoolFlag("expired"))
 	}
-	return execPassthrough(g, "transient", "delete", c.Key)
+	return execPassthrough(g, wpcli.New("transient", "delete"), c.Key)
 }
 
 func (c *TransientListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "transient", "list")
+	return execPassthrough(g, wpcli.New("transient", "list"))
 }

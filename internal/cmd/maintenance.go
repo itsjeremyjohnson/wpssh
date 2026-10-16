@@ -1,5 +1,7 @@
 package cmd
 
+import "github.com/builtbyrobben/wpssh/internal/wpcli"
+
 // Maintenance commands
 
 type MaintenanceCmd struct {
@@ -15,13 +17,13 @@ type (
 )
 
 func (c *MaintenanceActivateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "maintenance-mode", "activate")
+	return execPassthrough(g, wpcli.New("maintenance-mode", "activate"))
 }
 
 func (c *MaintenanceDeactivateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "maintenance-mode", "deactivate")
+	return execPassthrough(g, wpcli.New("maintenance-mode", "deactivate"))
 }
 
 func (c *MaintenanceStatusCmd) Run(g *Globals) error {
-	return execPassthrough(g, "maintenance-mode", "status")
+	return execPassthrough(g, wpcli.New("maintenance-mode", "status"))
 }
