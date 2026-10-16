@@ -32,15 +32,15 @@ type (
 )
 
 func (c *ConfigGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("config", "get"), c.Name)
+	return execPassthrough(g, wpcli.New("config", "get").Arg(c.Name))
 }
 
 func (c *ConfigSetCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("config", "set"), c.Name, c.Value)
+	return execPassthrough(g, wpcli.New("config", "set").Arg(c.Name).ValueArg(c.Value))
 }
 
 func (c *ConfigDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("config", "delete"), c.Name)
+	return execPassthrough(g, wpcli.New("config", "delete").Arg(c.Name))
 }
 
 func (c *ConfigHasCmd) Run(g *Globals) error {

@@ -50,7 +50,7 @@ type OptionPluckCmd struct {
 }
 
 func (c *OptionGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("option", "get"), c.Key)
+	return execPassthrough(g, wpcli.New("option", "get").Arg(c.Key))
 }
 
 func (c *OptionUpdateCmd) Run(g *Globals) error {
@@ -58,7 +58,9 @@ func (c *OptionUpdateCmd) Run(g *Globals) error {
 		cmd:        wpcli.New("option", "update"),
 		script:     optionUpdatePHP,
 		call:       "update_option",
-		args:       []string{c.Key, c.Value},
+		ids:        []string{"option name"},
+		args:       []string{c.Key},
+		value:      c.Value,
 		invalidate: []string{cache.CategoryOptions},
 	})
 }
@@ -68,7 +70,9 @@ func (c *OptionAddCmd) Run(g *Globals) error {
 		cmd:        wpcli.New("option", "add"),
 		script:     optionAddPHP,
 		call:       "add_option",
-		args:       []string{c.Key, c.Value},
+		ids:        []string{"option name"},
+		args:       []string{c.Key},
+		value:      c.Value,
 		invalidate: []string{cache.CategoryOptions},
 	})
 }
@@ -155,9 +159,9 @@ func (c *OptionPatchCmd) Run(g *Globals) error {
 
 	builder := wpcli.New("option", "patch").Arg(c.Action).Arg(c.Key).Arg(c.KeyPath)
 	if c.Value != "" {
-		builder.Arg(c.Value)
+		builder.ValueArg(c.Value)
 	}
-	result, err := rc.ExecWP(context.Background(), site, builder.Build(site.WPPath))
+	result, err := rc.ExecWPCommand(context.Background(), site, builder)
 	if err != nil {
 		return err
 	}
@@ -170,5 +174,5 @@ func (c *OptionPatchCmd) Run(g *Globals) error {
 }
 
 func (c *OptionPluckCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("option", "pluck"), c.Key, c.KeyPath)
+	return execPassthrough(g, wpcli.New("option", "pluck").Arg(c.Key).Arg(c.KeyPath))
 }

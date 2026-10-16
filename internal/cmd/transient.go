@@ -31,15 +31,15 @@ type TransientDeleteCmd struct {
 type TransientListCmd struct{}
 
 func (c *TransientGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("transient", "get"), c.Key)
+	return execPassthrough(g, wpcli.New("transient", "get").Arg(c.Key))
 }
 
 func (c *TransientSetCmd) Run(g *Globals) error {
-	var expiration string
+	cmd := wpcli.New("transient", "set").Arg(c.Key).ValueArg(c.Value)
 	if c.Expiration > 0 {
-		expiration = fmt.Sprint(c.Expiration)
+		cmd.Arg(fmt.Sprint(c.Expiration))
 	}
-	return execPassthrough(g, wpcli.New("transient", "set"), c.Key, c.Value, expiration)
+	return execPassthrough(g, cmd)
 }
 
 func (c *TransientDeleteCmd) Run(g *Globals) error {
@@ -49,7 +49,11 @@ func (c *TransientDeleteCmd) Run(g *Globals) error {
 	if c.Expired {
 		return execPassthrough(g, wpcli.New("transient", "delete").BoolFlag("expired"))
 	}
-	return execPassthrough(g, wpcli.New("transient", "delete"), c.Key)
+	cmd := wpcli.New("transient", "delete")
+	if c.Key != "" {
+		cmd.Arg(c.Key)
+	}
+	return execPassthrough(g, cmd)
 }
 
 func (c *TransientListCmd) Run(g *Globals) error {

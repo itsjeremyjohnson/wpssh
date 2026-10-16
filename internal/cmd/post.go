@@ -143,7 +143,7 @@ func (c *PostGetCmd) Run(g *Globals) error {
 }
 
 func (c *PostUpdateCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("post", "update"), fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("post", "update").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *PostDeleteCmd) Run(g *Globals) error {
@@ -177,22 +177,27 @@ func (c *PostExistsCmd) Run(g *Globals) error {
 }
 
 func (c *PostMetaListCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("post", "meta", "list"), fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("post", "meta", "list").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *PostMetaGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("post", "meta", "get"), fmt.Sprint(c.ID), c.Key)
+	return execPassthrough(g, wpcli.New("post", "meta", "get").Arg(fmt.Sprint(c.ID)).Arg(c.Key))
 }
 
 func (c *PostMetaUpdateCmd) Run(g *Globals) error {
+	if c.ID < 1 {
+		return fmt.Errorf("wp post meta update: post ID must be positive, got %d", c.ID)
+	}
 	return execValueWrite(g, valueWrite{
 		cmd:    wpcli.New("post", "meta", "update"),
 		script: postMetaUpdatePHP,
 		call:   "update_post_meta",
-		args:   []string{fmt.Sprint(c.ID), c.Key, c.Value},
+		ids:    []string{"post ID", "meta key"},
+		args:   []string{fmt.Sprint(c.ID), c.Key},
+		value:  c.Value,
 	})
 }
 
 func (c *PostMetaDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("post", "meta", "delete"), fmt.Sprint(c.ID), c.Key)
+	return execPassthrough(g, wpcli.New("post", "meta", "delete").Arg(fmt.Sprint(c.ID)).Arg(c.Key))
 }

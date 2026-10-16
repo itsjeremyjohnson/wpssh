@@ -8,9 +8,10 @@ import (
 	"github.com/builtbyrobben/wpssh/internal/wpcli"
 )
 
-// execPassthrough runs cmd with args as escaped positional arguments and
-// prints its stdout directly. Empty args are omitted (allows optional args).
-func execPassthrough(g *Globals, cmd *wpcli.Command, args ...string) error {
+// execPassthrough runs cmd and prints its stdout directly. Callers add every
+// required positional argument, even an empty one, and add an optional one
+// only when it was given. Verbose and dry-run output redact ValueArg values.
+func execPassthrough(g *Globals, cmd *wpcli.Command) error {
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err
@@ -22,13 +23,7 @@ func execPassthrough(g *Globals, cmd *wpcli.Command, args ...string) error {
 		return err
 	}
 
-	for _, a := range args {
-		if a != "" {
-			cmd.Arg(a)
-		}
-	}
-
-	result, err := rc.ExecWP(context.Background(), site, cmd.Build(site.WPPath))
+	result, err := rc.ExecWPCommand(context.Background(), site, cmd)
 	if err != nil {
 		return err
 	}

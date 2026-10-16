@@ -78,19 +78,23 @@ func (c *CronEventListCmd) Run(g *Globals) error {
 }
 
 func (c *CronEventRunCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("cron", "event", "run"), c.Hook)
+	return execPassthrough(g, wpcli.New("cron", "event", "run").Arg(c.Hook))
 }
 
 func (c *CronEventScheduleCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("cron", "event", "schedule"), c.Hook, c.NextRun, c.Recurrence)
+	cmd := wpcli.New("cron", "event", "schedule").Arg(c.Hook).Arg(c.NextRun)
+	if c.Recurrence != "" {
+		cmd.Arg(c.Recurrence)
+	}
+	return execPassthrough(g, cmd)
 }
 
 func (c *CronEventUnscheduleCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("cron", "event", "unschedule"), c.Hook)
+	return execPassthrough(g, wpcli.New("cron", "event", "unschedule").Arg(c.Hook))
 }
 
 func (c *CronEventDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("cron", "event", "delete"), c.Hook)
+	return execPassthrough(g, wpcli.New("cron", "event", "delete").Arg(c.Hook))
 }
 
 func (c *CronScheduleListCmd) Run(g *Globals) error {

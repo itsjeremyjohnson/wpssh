@@ -99,7 +99,7 @@ func (c *DBQueryCmd) Run(g *Globals) error {
 }
 
 func (c *DBSearchCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("db", "search"), c.Term)
+	return execPassthrough(g, wpcli.New("db", "search").Arg(c.Term))
 }
 
 func (c *DBSizeCmd) Run(g *Globals) error {

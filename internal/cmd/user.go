@@ -273,11 +273,11 @@ func (c *UserExistsCmd) Run(g *Globals) error {
 }
 
 func (c *UserMetaListCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("user", "meta", "list"), c.User)
+	return execPassthrough(g, wpcli.New("user", "meta", "list").Arg(c.User))
 }
 
 func (c *UserMetaGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("user", "meta", "get"), c.User, c.Key)
+	return execPassthrough(g, wpcli.New("user", "meta", "get").Arg(c.User).Arg(c.Key))
 }
 
 func (c *UserMetaUpdateCmd) Run(g *Globals) error {
@@ -285,10 +285,12 @@ func (c *UserMetaUpdateCmd) Run(g *Globals) error {
 		cmd:    wpcli.New("user", "meta", "update"),
 		script: userMetaUpdatePHP,
 		call:   "update_user_meta",
-		args:   []string{c.User, c.Key, c.Value},
+		ids:    []string{"user", "meta key"},
+		args:   []string{c.User, c.Key},
+		value:  c.Value,
 	})
 }
 
 func (c *UserMetaDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("user", "meta", "delete"), c.User, c.Key)
+	return execPassthrough(g, wpcli.New("user", "meta", "delete").Arg(c.User).Arg(c.Key))
 }

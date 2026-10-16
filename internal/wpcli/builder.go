@@ -17,8 +17,15 @@ type Command struct {
 	parts     []Word
 	flags     map[string]string
 	boolFlags []string
-	args      []string
+	args      []arg
 	format    string
+}
+
+// arg is a positional argument. Build writes value escaped; Display writes
+// shown instead when it is set.
+type arg struct {
+	value string
+	shown string
 }
 
 // New creates a new wp-cli command builder for the fixed command words.
@@ -47,15 +54,43 @@ func (c *Command) Format(f string) *Command {
 	return c
 }
 
-// Arg adds a positional argument.
+// Arg adds a positional argument, including an empty one.
 func (c *Command) Arg(value string) *Command {
-	c.args = append(c.args, value)
+	c.args = append(c.args, arg{value: value})
 	return c
+}
+
+// ValueArg adds a positional argument that may hold a secret, such as an
+// option or meta value. Display shows Redact(value) in its place.
+func (c *Command) ValueArg(value string) *Command {
+	return c.ArgShown(value, Redact(value))
+}
+
+// ArgShown adds a positional argument that Display shows as shown.
+func (c *Command) ArgShown(value, shown string) *Command {
+	c.args = append(c.args, arg{value: value, shown: shown})
+	return c
+}
+
+// Redact is how verbose and dry-run output show a value that may be secret:
+// its length only.
+func Redact(value string) string {
+	return fmt.Sprintf("<value, %d bytes>", len(value))
 }
 
 // Build returns the full command string: "cd {wpPath} && wp {parts} {args} {flags}"
 // Path expressions preserve remote ~/ expansion; other values are single-quoted.
 func (c *Command) Build(wpPath string) string {
+	return c.build(wpPath, false)
+}
+
+// Display returns the command as Build does, with each ValueArg or ArgShown
+// argument replaced by its shown text, for verbose and dry-run output.
+func (c *Command) Display(wpPath string) string {
+	return c.build(wpPath, true)
+}
+
+func (c *Command) build(wpPath string, display bool) string {
 	var b strings.Builder
 
 	b.WriteString("cd ")
@@ -69,7 +104,11 @@ func (c *Command) Build(wpPath string) string {
 
 	for _, a := range c.args {
 		b.WriteByte(' ')
-		b.WriteString(shellEscape(a))
+		if display && a.shown != "" {
+			b.WriteString(a.shown)
+		} else {
+			b.WriteString(shellEscape(a.value))
+		}
 	}
 
 	if c.format != "" {

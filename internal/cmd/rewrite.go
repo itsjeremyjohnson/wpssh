@@ -27,5 +27,5 @@ func (c *RewriteListCmd) Run(g *Globals) error {
 }
 
 func (c *RewriteStructureCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("rewrite", "structure"), c.Permastruct)
+	return execPassthrough(g, wpcli.New("rewrite", "structure").Arg(c.Permastruct))
 }

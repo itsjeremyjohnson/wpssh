@@ -31,11 +31,11 @@ func (c *RoleListCmd) Run(g *Globals) error {
 }
 
 func (c *RoleCreateCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("role", "create"), c.Role, c.DisplayName)
+	return execPassthrough(g, wpcli.New("role", "create").Arg(c.Role).Arg(c.DisplayName))
 }
 
 func (c *RoleDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, wpcli.New("role", "delete"), c.Role)
+	return execPassthrough(g, wpcli.New("role", "delete").Arg(c.Role))
 }
 
 func (c *RoleExistsCmd) Run(g *Globals) error {
