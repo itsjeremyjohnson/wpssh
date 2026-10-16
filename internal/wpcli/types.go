@@ -1,22 +1,60 @@
 package wpcli
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+// FlexString is a string field that wp-cli sometimes emits as a bool or null.
+// wp plugin list reports "update": false on must-use and dropin rows.
+// It decodes a string verbatim, false as "none", true as "available", and
+// null as "". It always encodes as a JSON string.
+type FlexString string
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (f *FlexString) UnmarshalJSON(data []byte) error {
+	switch string(bytes.TrimSpace(data)) {
+	case "null":
+		*f = ""
+		return nil
+	case "false":
+		*f = "none"
+		return nil
+	case "true":
+		*f = "available"
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf("want string, bool, or null, got %s", data)
+	}
+	*f = FlexString(s)
+	return nil
+}
+
+// MarshalJSON implements json.Marshaler.
+func (f FlexString) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(f))
+}
+
 // Plugin represents a WordPress plugin as returned by wp plugin list --format=json.
 type Plugin struct {
-	Name          string `json:"name"`
-	Status        string `json:"status"` // active, inactive, must-use, dropin
-	Update        string `json:"update"` // available, none
-	Version       string `json:"version"`
-	UpdateVersion string `json:"update_version,omitempty"`
-	AutoUpdate    string `json:"auto_update"` // on, off
+	Name          string     `json:"name"`
+	Status        string     `json:"status"` // active, inactive, must-use, dropin
+	Update        FlexString `json:"update"` // available, none
+	Version       string     `json:"version"`
+	UpdateVersion string     `json:"update_version,omitempty"`
+	AutoUpdate    string     `json:"auto_update"` // on, off
 }
 
 // Theme represents a WordPress theme as returned by wp theme list --format=json.
 type Theme struct {
-	Name       string `json:"name"`
-	Status     string `json:"status"` // active, inactive, parent
-	Update     string `json:"update"`
-	Version    string `json:"version"`
-	AutoUpdate string `json:"auto_update"`
+	Name       string     `json:"name"`
+	Status     string     `json:"status"` // active, inactive, parent
+	Update     FlexString `json:"update"`
+	Version    string     `json:"version"`
+	AutoUpdate string     `json:"auto_update"`
 }
 
 // User represents a WordPress user as returned by wp user list --format=json.
