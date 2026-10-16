@@ -50,8 +50,14 @@ func (c *RawCmd) runWithIO(g *Globals, stdin io.Reader) error {
 		return err
 	}
 
-	// Build the raw command by passing all args through.
-	builder := wpcli.New(c.Args...)
+	// Build the raw command by passing all args through unescaped: raw's
+	// argv is a wp command line by design, checked above by checkRawArgs.
+	// This is the only place a user value may become a wpcli.Word.
+	words := make([]wpcli.Word, len(c.Args))
+	for i, a := range c.Args {
+		words[i] = wpcli.Word(a)
+	}
+	builder := wpcli.New(words...)
 	cmd := builder.Build(site.WPPath)
 	var result internalssh.ExecResult
 	if readsStdin && !g.DryRun {

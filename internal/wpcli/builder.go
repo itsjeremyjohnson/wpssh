@@ -6,9 +6,15 @@ import (
 	"strings"
 )
 
+// Word is a fixed wp-cli command word, such as "post" or "update". Only an
+// untyped string constant converts to Word implicitly, so a user value cannot
+// become a command word by accident: pass user values with Arg, which escapes
+// them. Build writes words unescaped.
+type Word string
+
 // Command builds a wp-cli command string with proper shell escaping.
 type Command struct {
-	parts     []string
+	parts     []Word
 	flags     map[string]string
 	boolFlags []string
 	args      []string
@@ -16,8 +22,7 @@ type Command struct {
 }
 
 // New creates a new wp-cli command builder for the fixed command words.
-// Build writes parts unescaped; pass user values with Arg.
-func New(parts ...string) *Command {
+func New(parts ...Word) *Command {
 	return &Command{
 		parts: parts,
 		flags: make(map[string]string),
@@ -59,7 +64,7 @@ func (c *Command) Build(wpPath string) string {
 
 	for _, p := range c.parts {
 		b.WriteByte(' ')
-		b.WriteString(p)
+		b.WriteString(string(p))
 	}
 
 	for _, a := range c.args {
@@ -102,7 +107,11 @@ func (c *Command) Build(wpPath string) string {
 // Name returns the command words, e.g. "post meta update", without arguments
 // or flags.
 func (c *Command) Name() string {
-	return strings.Join(c.parts, " ")
+	words := make([]string, len(c.parts))
+	for i, p := range c.parts {
+		words[i] = string(p)
+	}
+	return strings.Join(words, " ")
 }
 
 // CacheKey returns the normalized form for cache lookup:

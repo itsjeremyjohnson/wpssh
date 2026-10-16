@@ -41,7 +41,7 @@ func execPassthrough(g *Globals, cmd *wpcli.Command, args ...string) error {
 
 // execBoolCheck runs a wp-cli boolean check command (is-active, is-installed, exists)
 // and prints a human-readable result.
-func execBoolCheck(g *Globals, group, subCmd, target, label string) error {
+func execBoolCheck(g *Globals, group, subCmd wpcli.Word, target, label string) error {
 	rc, err := NewRunContext(g)
 	if err != nil {
 		return err
@@ -59,7 +59,7 @@ func execBoolCheck(g *Globals, group, subCmd, target, label string) error {
 		return err
 	}
 
-	verb := strings.ReplaceAll(subCmd, "-", " ")
+	verb := strings.ReplaceAll(string(subCmd), "-", " ")
 	if result.ExitCode != 0 {
 		fmt.Fprintf(rc.Stdout, "%s %s is not %s.\n", label, target, verb)
 	} else {
