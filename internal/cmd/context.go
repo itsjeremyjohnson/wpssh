@@ -13,6 +13,7 @@ import (
 	"github.com/builtbyrobben/wpssh/internal/outfmt"
 	"github.com/builtbyrobben/wpssh/internal/registry"
 	internalssh "github.com/builtbyrobben/wpssh/internal/ssh"
+	"github.com/builtbyrobben/wpssh/internal/wpcli"
 )
 
 // RunContext wires together all the services needed to execute a wp-cli command.
@@ -102,13 +103,29 @@ func (rc *RunContext) ResolveSite() (*registry.Site, error) {
 
 // ExecWP executes a wp-cli command on a site and returns the result.
 func (rc *RunContext) ExecWP(ctx context.Context, site *registry.Site, wpCmd string) (internalssh.ExecResult, error) {
+	return rc.execWPShown(ctx, site, wpCmd, wpCmd, nil)
+}
+
+// ExecWPCommand executes cmd on a site. Verbose and dry-run output show
+// cmd.Display, which redacts value arguments.
+func (rc *RunContext) ExecWPCommand(ctx context.Context, site *registry.Site, cmd *wpcli.Command) (internalssh.ExecResult, error) {
+	return rc.execWPShown(ctx, site, cmd.Build(site.WPPath), cmd.Display(site.WPPath), nil)
+}
+
+// execWPShown executes wpCmd on a site, with stdin streamed to it when stdin
+// is not nil. Verbose and dry-run output show shown instead of wpCmd; dry-run
+// sends nothing.
+func (rc *RunContext) execWPShown(ctx context.Context, site *registry.Site, wpCmd, shown string, stdin io.Reader) (internalssh.ExecResult, error) {
 	a := adapter.ForSite(site)
 	if rc.Globals.Verbose {
-		fmt.Fprintf(rc.Stderr, "[adapter: %s] %s\n", a.Name(), wpCmd)
+		fmt.Fprintf(rc.Stderr, "[adapter: %s] %s\n", a.Name(), shown)
 	}
 	if rc.Globals.DryRun {
-		fmt.Fprintf(rc.Stderr, "[dry-run] %s\n", wpCmd)
+		fmt.Fprintf(rc.Stderr, "[dry-run] %s\n", shown)
 		return internalssh.ExecResult{}, nil
+	}
+	if stdin != nil {
+		return a.ExecStdin(ctx, rc.SSHClient, site, wpCmd, stdin)
 	}
 	return a.Exec(ctx, rc.SSHClient, site, wpCmd)
 }
@@ -131,15 +148,7 @@ func (rc *RunContext) ExecWPStream(ctx context.Context, site *registry.Site, wpC
 // ExecWPStdin executes a wp-cli command on a site with stdin streamed to it.
 // In dry-run mode it prints the command and reads nothing.
 func (rc *RunContext) ExecWPStdin(ctx context.Context, site *registry.Site, wpCmd string, stdin io.Reader) (internalssh.ExecResult, error) {
-	a := adapter.ForSite(site)
-	if rc.Globals.Verbose {
-		fmt.Fprintf(rc.Stderr, "[adapter: %s] %s\n", a.Name(), wpCmd)
-	}
-	if rc.Globals.DryRun {
-		fmt.Fprintf(rc.Stderr, "[dry-run] %s\n", wpCmd)
-		return internalssh.ExecResult{}, nil
-	}
-	return a.ExecStdin(ctx, rc.SSHClient, site, wpCmd, stdin)
+	return rc.execWPShown(ctx, site, wpCmd, wpCmd, stdin)
 }
 
 // CacheGet checks the cache for a stored result. Returns the cached data

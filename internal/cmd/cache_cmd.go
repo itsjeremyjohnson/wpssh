@@ -1,5 +1,7 @@
 package cmd
 
+import "github.com/builtbyrobben/wpssh/internal/wpcli"
+
 // Cache commands (wp cache — object cache operations)
 
 type CacheCmdGroup struct {
@@ -30,21 +32,30 @@ type CacheDeleteCmd struct {
 type CacheTypeCmd struct{}
 
 func (c *CacheFlushCmd) Run(g *Globals) error {
-	return execPassthrough(g, "cache", "flush")
+	return execPassthrough(g, wpcli.New("cache", "flush"))
 }
 
 func (c *CacheGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "cache", "get", c.Key, c.Group)
+	return execPassthrough(g, withGroup(wpcli.New("cache", "get").Arg(c.Key), c.Group))
 }
 
 func (c *CacheSetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "cache", "set", c.Key, c.Value, c.Group)
+	return execPassthrough(g, withGroup(wpcli.New("cache", "set").Arg(c.Key).ValueArg(c.Value), c.Group))
 }
 
 func (c *CacheDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "cache", "delete", c.Key, c.Group)
+	return execPassthrough(g, withGroup(wpcli.New("cache", "delete").Arg(c.Key), c.Group))
 }
 
 func (c *CacheTypeCmd) Run(g *Globals) error {
-	return execPassthrough(g, "cache", "type")
+	return execPassthrough(g, wpcli.New("cache", "type"))
+}
+
+// withGroup adds the optional cache group to cmd when it was given. wp-cli
+// reads an empty group as the default group, so omitting it is the same.
+func withGroup(cmd *wpcli.Command, group string) *wpcli.Command {
+	if group != "" {
+		cmd.Arg(group)
+	}
+	return cmd
 }

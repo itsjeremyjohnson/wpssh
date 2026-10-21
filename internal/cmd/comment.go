@@ -1,6 +1,10 @@
 package cmd
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/builtbyrobben/wpssh/internal/wpcli"
+)
 
 // Comment commands
 
@@ -57,49 +61,49 @@ type CommentUntrashCmd struct {
 type CommentCountCmd struct{}
 
 func (c *CommentListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "list")
+	return execPassthrough(g, wpcli.New("comment", "list"))
 }
 
 func (c *CommentGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "get", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "get").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentCreateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "create")
+	return execPassthrough(g, wpcli.New("comment", "create"))
 }
 
 func (c *CommentUpdateCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "update", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "update").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "delete", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "delete").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentApproveCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "approve", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "approve").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentUnapproveCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "unapprove", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "unapprove").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentSpamCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "spam", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "spam").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentUnspamCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "unspam", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "unspam").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentTrashCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "trash", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "trash").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentUntrashCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "untrash", fmt.Sprint(c.ID))
+	return execPassthrough(g, wpcli.New("comment", "untrash").Arg(fmt.Sprint(c.ID)))
 }
 
 func (c *CommentCountCmd) Run(g *Globals) error {
-	return execPassthrough(g, "comment", "count")
+	return execPassthrough(g, wpcli.New("comment", "count"))
 }

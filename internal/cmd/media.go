@@ -25,7 +25,7 @@ type MediaRegenerateCmd struct {
 type MediaImageSizeCmd struct{}
 
 func (c *MediaImportCmd) Run(g *Globals) error {
-	return execPassthrough(g, "media", "import", c.File)
+	return execPassthrough(g, wpcli.New("media", "import").Arg(c.File))
 }
 
 func (c *MediaRegenerateCmd) Run(g *Globals) error {
@@ -57,5 +57,5 @@ func (c *MediaRegenerateCmd) Run(g *Globals) error {
 }
 
 func (c *MediaImageSizeCmd) Run(g *Globals) error {
-	return execPassthrough(g, "media", "image-size")
+	return execPassthrough(g, wpcli.New("media", "image-size"))
 }

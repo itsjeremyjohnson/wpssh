@@ -166,7 +166,7 @@ func NewServer(service Service, allowWrites bool, schemaCache *mcp.SchemaCache, 
 	return s
 }
 
-func pluginAction(ctx context.Context, service Service, in pluginInput, action string) (*mcp.CallToolResult, actionOutput, error) {
+func pluginAction(ctx context.Context, service Service, in pluginInput, action wpcli.Word) (*mcp.CallToolResult, actionOutput, error) {
 	if strings.TrimSpace(in.Plugin) == "" {
 		return nil, actionOutput{}, errPluginRequired
 	}

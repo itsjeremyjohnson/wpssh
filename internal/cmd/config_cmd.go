@@ -1,5 +1,7 @@
 package cmd
 
+import "github.com/builtbyrobben/wpssh/internal/wpcli"
+
 // Config commands (wp config — wp-config.php management)
 
 type ConfigCmdGroup struct {
@@ -30,15 +32,15 @@ type (
 )
 
 func (c *ConfigGetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "config", "get", c.Name)
+	return execPassthrough(g, wpcli.New("config", "get").Arg(c.Name))
 }
 
 func (c *ConfigSetCmd) Run(g *Globals) error {
-	return execPassthrough(g, "config", "set", c.Name, c.Value)
+	return execPassthrough(g, wpcli.New("config", "set").Arg(c.Name).ValueArg(c.Value))
 }
 
 func (c *ConfigDeleteCmd) Run(g *Globals) error {
-	return execPassthrough(g, "config", "delete", c.Name)
+	return execPassthrough(g, wpcli.New("config", "delete").Arg(c.Name))
 }
 
 func (c *ConfigHasCmd) Run(g *Globals) error {
@@ -46,9 +48,9 @@ func (c *ConfigHasCmd) Run(g *Globals) error {
 }
 
 func (c *ConfigListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "config", "list")
+	return execPassthrough(g, wpcli.New("config", "list"))
 }
 
 func (c *ConfigPathCmd) Run(g *Globals) error {
-	return execPassthrough(g, "config", "path")
+	return execPassthrough(g, wpcli.New("config", "path"))
 }

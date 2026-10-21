@@ -1,5 +1,7 @@
 package cmd
 
+import "github.com/builtbyrobben/wpssh/internal/wpcli"
+
 // Rewrite commands
 
 type RewriteCmd struct {
@@ -17,13 +19,13 @@ type (
 )
 
 func (c *RewriteFlushCmd) Run(g *Globals) error {
-	return execPassthrough(g, "rewrite", "flush")
+	return execPassthrough(g, wpcli.New("rewrite", "flush"))
 }
 
 func (c *RewriteListCmd) Run(g *Globals) error {
-	return execPassthrough(g, "rewrite", "list")
+	return execPassthrough(g, wpcli.New("rewrite", "list"))
 }
 
 func (c *RewriteStructureCmd) Run(g *Globals) error {
-	return execPassthrough(g, "rewrite", "structure", c.Permastruct)
+	return execPassthrough(g, wpcli.New("rewrite", "structure").Arg(c.Permastruct))
 }

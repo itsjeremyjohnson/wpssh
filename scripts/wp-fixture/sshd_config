@@ -1,0 +1,30 @@
+# Port 22 is a standard host. 2201-2203 and 2205 model WP Engine's gateway
+# with wpe-gateway; 2204 and 2205 set WP_CLI_FORCE_USER_LOGIN.
+Port 22
+Port 2201
+Port 2202
+Port 2203
+Port 2204
+Port 2205
+HostKey /etc/ssh/ssh_host_ed25519_key
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+AllowUsers wpuser
+PermitRootLogin no
+AllowTcpForwarding no
+AllowAgentForwarding no
+X11Forwarding no
+
+Match LocalPort 2201
+	ForceCommand /usr/local/bin/wpe-gateway
+Match LocalPort 2202
+	ForceCommand /usr/local/bin/wpe-gateway drop
+Match LocalPort 2203
+	ForceCommand /usr/local/bin/wpe-gateway bad
+Match LocalPort 2204
+	SetEnv WP_CLI_FORCE_USER_LOGIN=1
+Match LocalPort 2205
+	SetEnv WP_CLI_FORCE_USER_LOGIN=1
+	ForceCommand /usr/local/bin/wpe-gateway

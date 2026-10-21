@@ -285,7 +285,11 @@ func (c *ThemeIsInstalledCmd) Run(g *Globals) error {
 }
 
 func (c *ThemeStatusCmd) Run(g *Globals) error {
-	return execPassthrough(g, "theme", "status", c.Theme)
+	cmd := wpcli.New("theme", "status")
+	if c.Theme != "" {
+		cmd.Arg(c.Theme)
+	}
+	return execPassthrough(g, cmd)
 }
 
 func (c *ThemeAutoUpdatesEnableCmd) Run(g *Globals) error {
@@ -337,5 +341,9 @@ func (c *ThemeAutoUpdatesDisableCmd) Run(g *Globals) error {
 }
 
 func (c *ThemeAutoUpdatesStatusCmd) Run(g *Globals) error {
-	return execPassthrough(g, "theme", "auto-updates", "status", c.Theme)
+	cmd := wpcli.New("theme", "auto-updates", "status")
+	if c.Theme != "" {
+		cmd.Arg(c.Theme)
+	}
+	return execPassthrough(g, cmd)
 }
