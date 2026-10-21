@@ -3,7 +3,6 @@ package cmd
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -117,13 +116,20 @@ func TestStandardValuesReachWPWhole(t *testing.T) {
 // split on or interpret.
 const wpengineValue = "a b c it's \"q\" $HOME $(id) `id` x; touch /tmp/pwn | & > \\back\nline two\t"
 
+// wpengineWrite is the WordPress function a WP Engine value write's script
+// calls, and the object ID it writes to as eval_file_harness.php records it.
+type wpengineWrite struct {
+	call string
+	id   any // post or user ID as JSON decodes it; nil for options
+}
+
 // wpengineWrites maps each value write that runs as eval-file on WP Engine
-// to the WordPress function its script calls.
-var wpengineWrites = map[string]string{
-	"post meta update": "update_post_meta",
-	"user meta update": "update_user_meta",
-	"option update":    "update_option",
-	"option add":       "add_option",
+// to the write its script makes for valueCases.
+var wpengineWrites = map[string]wpengineWrite{
+	"post meta update": {"update_post_meta", float64(1)},
+	"user meta update": {"update_user_meta", float64(7)},
+	"option update":    {"update_option", nil},
+	"option add":       {"add_option", nil},
 }
 
 // gatewayWords runs a value write against a WP Engine site and returns the
@@ -151,7 +157,7 @@ func gatewayWords(t *testing.T, vc valueCase, value string) (words []string, scr
 // that decodes to the exact argument after the gateway drops quoting.
 func TestWPEngineValueWritesSendEveryArgAfterQuoteStripping(t *testing.T) {
 	for _, vc := range valueCases {
-		call, ok := wpengineWrites[vc.name]
+		write, ok := wpengineWrites[vc.name]
 		if !ok {
 			continue
 		}
@@ -173,8 +179,8 @@ func TestWPEngineValueWritesSendEveryArgAfterQuoteStripping(t *testing.T) {
 				if want := vc.argv(value)[len(strings.Fields(vc.name)):]; !slices.Equal(decoded, want) {
 					t.Fatalf("decoded args = %q, want %q", decoded, want)
 				}
-				if !strings.HasPrefix(script, "<?php") || !strings.Contains(script, call+"(") {
-					t.Fatalf("stdin = %q, want PHP calling %s", script, call)
+				if !strings.HasPrefix(script, "<?php") || !strings.Contains(script, write.call+"(") {
+					t.Fatalf("stdin = %q, want PHP calling %s", script, write.call)
 				}
 			})
 		}
@@ -273,13 +279,12 @@ func TestValueCommandsRedactValueInOutput(t *testing.T) {
 	}
 }
 
-// TestWPEngineScriptsStoreExactValue runs each eval-file script in PHP with
-// the words WP Engine's gateway passes it, against stubs of WordPress that
-// record writes the way WordPress stores them (meta writes unslash their
-// arguments). It checks the stored key and value match the input exactly,
-// and that a script given a dropped or unprefixed word stores nothing. It
-// needs php on PATH.
-func TestWPEngineScriptsStoreExactValue(t *testing.T) {
+// runEvalFile runs script with args as `wp eval-file -` would, against
+// testdata/eval_file_harness.php's stubs of WordPress, with env added to the
+// environment. It returns the writes the stubs recorded and the combined
+// output, and skips the test unless php is on PATH.
+func runEvalFile(t *testing.T, script string, args, env []string) (calls [][]any, out string, err error) {
+	t.Helper()
 	php, err := exec.LookPath("php")
 	if err != nil {
 		t.Skip("php not on PATH")
@@ -288,44 +293,45 @@ func TestWPEngineScriptsStoreExactValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// runPHP runs script with args and returns the writes it recorded.
-	runPHP := func(t *testing.T, script string, args []string) ([][]any, error) {
-		t.Helper()
-		dir := t.TempDir()
-		scriptPath := filepath.Join(dir, "script.php")
-		callsPath := filepath.Join(dir, "calls.json")
-		if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.Command(php, append([]string{harness, scriptPath}, args...)...)
-		cmd.Env = append(os.Environ(), "CALLS_FILE="+callsPath)
-		out, runErr := cmd.CombinedOutput()
-		raw, err := os.ReadFile(callsPath)
-		if err != nil {
-			t.Fatalf("php wrote no calls: %v\n%s", err, out)
-		}
-		var calls [][]any
-		if err := json.Unmarshal(raw, &calls); err != nil {
-			t.Fatalf("calls %q: %v", raw, err)
-		}
-		if runErr != nil {
-			runErr = fmt.Errorf("%w: %s", runErr, out)
-		}
-		return calls, runErr
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "script.php")
+	callsPath := filepath.Join(dir, "calls.json")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
 	}
+	cmd := exec.Command(php, append([]string{harness, scriptPath}, args...)...)
+	cmd.Env = append(append(os.Environ(), "CALLS_FILE="+callsPath), env...)
+	raw, runErr := cmd.CombinedOutput()
+	callsRaw, err := os.ReadFile(callsPath)
+	if err != nil {
+		t.Fatalf("php wrote no calls: %v\n%s", err, raw)
+	}
+	if err := json.Unmarshal(callsRaw, &calls); err != nil {
+		t.Fatalf("calls %q: %v", callsRaw, err)
+	}
+	return calls, string(raw), runErr
+}
+
+// TestWPEngineScriptsStoreExactValue runs each eval-file script in PHP with
+// the words WP Engine's gateway passes it, against stubs of WordPress that
+// record writes the way WordPress stores them (meta writes unslash their
+// arguments). It checks the stored key and value match the input exactly,
+// and that a script given a dropped or unprefixed word stores nothing. It
+// needs php on PATH.
+func TestWPEngineScriptsStoreExactValue(t *testing.T) {
 	for _, vc := range valueCases {
-		call, ok := wpengineWrites[vc.name]
+		write, ok := wpengineWrites[vc.name]
 		if !ok {
 			continue
 		}
 		for _, value := range []string{wpengineValue, "", `C:\path\"q"`} {
 			t.Run(vc.name+"/"+value, func(t *testing.T) {
 				words, script := gatewayWords(t, vc, value)
-				calls, err := runPHP(t, script, words)
+				calls, out, err := runEvalFile(t, script, words, nil)
 				if err != nil {
-					t.Fatal(err)
+					t.Fatalf("%v\n%s", err, out)
 				}
-				want := []any{call, "k", value}
+				want := []any{write.call, write.id, "k", value}
 				if len(calls) != 1 || !slices.Equal(calls[0], want) {
 					t.Fatalf("recorded %q, want one %q", calls, want)
 				}
@@ -334,10 +340,105 @@ func TestWPEngineScriptsStoreExactValue(t *testing.T) {
 		t.Run(vc.name+"/bad words", func(t *testing.T) {
 			words, script := gatewayWords(t, vc, "")
 			for _, bad := range [][]string{words[:len(words)-1], append(slices.Clone(words), evalArg("x")), append(slices.Clone(words[:len(words)-1]), "victim")} {
-				calls, err := runPHP(t, script, bad)
+				calls, _, err := runEvalFile(t, script, bad, nil)
 				if err == nil || len(calls) != 0 {
 					t.Fatalf("words %q: err %v, recorded %q; want failure and no writes", bad, err, calls)
 				}
+			}
+		})
+	}
+}
+
+// TestWPEngineScriptsMatchNativeWPCLI runs eval-file scripts in PHP, as
+// TestWPEngineScriptsStoreExactValue does, where native wp-cli picks a
+// different user, compares sanitized values, or normalizes the value. Each
+// case checks the script writes what native wp-cli writes and reports as it
+// does.
+func TestWPEngineScriptsMatchNativeWPCLI(t *testing.T) {
+	userMeta := func(user, key, value string) func(g *Globals) error {
+		return func(g *Globals) error {
+			return (&UserMetaUpdateCmd{User: user, Key: key, Value: value}).Run(g)
+		}
+	}
+	cases := []struct {
+		name    string
+		run     func(g *Globals) error
+		env     []string
+		want    [][]any // recorded writes
+		wantOut string  // in the combined output
+		wantErr bool
+	}{
+		{
+			name:    "missing numeric user ID does not fall back to a login",
+			run:     userMeta("123", "k", "v"),
+			want:    [][]any{},
+			wantOut: "Error: Invalid user ID, email or login: '123'",
+			wantErr: true,
+		},
+		{
+			name:    "numeric user ID that is also a login writes the ID and warns",
+			run:     userMeta("7", "k", "v"),
+			want:    [][]any{{"update_user_meta", float64(7), "k", "v"}},
+			wantOut: "Warning: Ambiguous user match detected (both ID and user_login exist for identifier '7').",
+		},
+		{
+			name:    "WP_CLI_FORCE_USER_LOGIN selects the user by login",
+			run:     userMeta("7", "k", "v"),
+			env:     []string{"WP_CLI_FORCE_USER_LOGIN=1"},
+			want:    [][]any{{"update_user_meta", float64(9), "k", "v"}},
+			wantOut: "Success: Updated custom field 'k'.",
+		},
+		{
+			name:    "WP_CLI_FORCE_USER_LOGIN does not fall back to an ID",
+			run:     userMeta("8", "k", "v"),
+			env:     []string{"WP_CLI_FORCE_USER_LOGIN=1"},
+			want:    [][]any{},
+			wantOut: "Error: Invalid user login: '8'",
+			wantErr: true,
+		},
+		{
+			name:    "user meta that sanitizes to the stored value is unchanged",
+			run:     userMeta("admin", "upper", "old"),
+			want:    [][]any{},
+			wantOut: "Success: Value passed for custom field 'upper' is unchanged.",
+		},
+		{
+			name: "post meta that sanitizes to the stored value is unchanged",
+			run: func(g *Globals) error {
+				return (&PostMetaUpdateCmd{ID: 1, Key: "upper", Value: "old"}).Run(g)
+			},
+			want:    [][]any{},
+			wantOut: "Success: Value passed for custom field 'upper' is unchanged.",
+		},
+		{
+			name: "option update drops the trailing slash from category_base",
+			run: func(g *Globals) error {
+				return (&OptionUpdateCmd{Key: "category_base", Value: "/news/"}).Run(g)
+			},
+			want:    [][]any{{"update_option", nil, "category_base", "/news"}},
+			wantOut: "Success: Updated 'category_base' option.",
+		},
+		{
+			name: "option update keeps the trailing slash on other options",
+			run: func(g *Globals) error {
+				return (&OptionUpdateCmd{Key: "k", Value: "/news/"}).Run(g)
+			},
+			want:    [][]any{{"update_option", nil, "k", "/news/"}},
+			wantOut: "Success: Updated 'k' option.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			words, script := gatewayWords(t, valueCase{name: tc.name, run: func(g *Globals, _ string) error { return tc.run(g) }}, "")
+			calls, out, err := runEvalFile(t, script, words, tc.env)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, want error %v\n%s", err, tc.wantErr, out)
+			}
+			if !strings.Contains(out, tc.wantOut) {
+				t.Fatalf("output %q lacks %q", out, tc.wantOut)
+			}
+			if !slices.EqualFunc(calls, tc.want, slices.Equal) {
+				t.Fatalf("recorded %v, want %v", calls, tc.want)
 			}
 		})
 	}

@@ -97,7 +97,9 @@ func (rc *RunContext) execEvalFile(ctx context.Context, site *registry.Site, w v
 	return rc.execWPShown(ctx, site, cmd.Build(site.WPPath), shown, strings.NewReader(w.script))
 }
 
-// The eval-file scripts below report like the wp-cli commands they replace.
+// The eval-file scripts below select, sanitize, compare, and report like the
+// wp-cli commands they replace (wp-cli's user fetcher, CommandWithMeta::update,
+// and Option_Command).
 // Each starts with evalArgsPHP, which decodes $args into $decoded and stops
 // unless it holds exactly the expected number of evalArg words.
 
@@ -124,7 +126,8 @@ $post = get_post( (int) $id );
 if ( ! $post ) {
 	WP_CLI::error( "Could not find the post with ID {$id}." );
 }
-if ( get_post_meta( $post->ID, $key, true ) === $value ) {
+$value = sanitize_meta( $key, $value, 'post' );
+if ( sanitize_meta( $key, get_post_meta( $post->ID, $key, true ), 'post' ) === $value ) {
 	WP_CLI::success( "Value passed for custom field '{$key}' is unchanged." );
 } elseif ( update_post_meta( $post->ID, wp_slash( $key ), wp_slash( $value ) ) ) {
 	WP_CLI::success( "Updated custom field '{$key}'." );
@@ -136,19 +139,34 @@ if ( get_post_meta( $post->ID, $key, true ) === $value ) {
 const userMetaUpdatePHP = `<?php
 $want = 3;` + evalArgsPHP + `
 list( $user, $key, $value ) = $decoded;
-$found = false;
-if ( is_numeric( $user ) ) {
-	$found = get_user_by( 'id', (int) $user );
+// Select the user as wp-cli's user fetcher does.
+$invalid = "Invalid user ID, email or login: '{$user}'";
+if ( getenv( 'WP_CLI_FORCE_USER_LOGIN' ) ) {
+	$invalid = "Invalid user login: '{$user}'";
+	$found   = get_user_by( 'login', $user );
+} elseif ( is_numeric( $user ) ) {
+	$found = get_user_by( 'id', $user );
+	if ( $found && get_user_by( 'login', $user ) ) {
+		WP_CLI::warning(
+			sprintf(
+				'Ambiguous user match detected (both ID and user_login exist for identifier \'%d\'). WP-CLI will default to the ID, but you can force user_login instead with WP_CLI_FORCE_USER_LOGIN=1.',
+				(int) $user
+			)
+		);
+	}
 } elseif ( is_email( $user ) ) {
 	$found = get_user_by( 'email', $user );
-}
-if ( ! $found ) {
+	if ( ! $found ) {
+		$found = get_user_by( 'login', $user );
+	}
+} else {
 	$found = get_user_by( 'login', $user );
 }
 if ( ! $found ) {
-	WP_CLI::error( "Invalid user ID, email or login: '{$user}'" );
+	WP_CLI::error( $invalid );
 }
-if ( get_user_meta( $found->ID, $key, true ) === $value ) {
+$value = sanitize_meta( $key, $value, 'user' );
+if ( sanitize_meta( $key, get_user_meta( $found->ID, $key, true ), 'user' ) === $value ) {
 	WP_CLI::success( "Value passed for custom field '{$key}' is unchanged." );
 } elseif ( update_user_meta( $found->ID, wp_slash( $key ), wp_slash( $value ) ) ) {
 	WP_CLI::success( "Updated custom field '{$key}'." );
@@ -161,6 +179,9 @@ const optionUpdatePHP = `<?php
 $want = 2;` + evalArgsPHP + `
 list( $key, $value ) = $decoded;
 $value = sanitize_option( $key, $value );
+if ( in_array( $key, array( 'siteurl', 'home', 'category_base', 'tag_base' ), true ) ) {
+	$value = untrailingslashit( $value );
+}
 if ( sanitize_option( $key, get_option( $key ) ) === $value ) {
 	WP_CLI::success( "Value passed for '{$key}' option is unchanged." );
 } elseif ( update_option( $key, $value ) ) {
