@@ -282,12 +282,10 @@ func (c *UserMetaGetCmd) Run(g *Globals) error {
 
 func (c *UserMetaUpdateCmd) Run(g *Globals) error {
 	return execValueWrite(g, valueWrite{
-		cmd:    wpcli.New("user", "meta", "update"),
-		script: userMetaUpdatePHP,
-		call:   "update_user_meta",
-		ids:    []string{"user", "meta key"},
-		args:   []string{c.User, c.Key},
-		value:  c.Value,
+		cmd:   wpcli.New("user", "meta", "update"),
+		ids:   []string{"user", "meta key"},
+		args:  []string{c.User, c.Key},
+		value: c.Value,
 	})
 }
 

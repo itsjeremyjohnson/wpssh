@@ -17,15 +17,12 @@ import (
 //
 // WP Engine's SSH gateway parses the remote command a second time and drops
 // its quoting, so a quoted value such as 'a b c' reaches wp as three words
-// and an empty argument disappears. On WP Engine a valueWrite runs script
-// from stdin with `wp eval-file -` instead and passes each argument as
-// evalArg encodes it.
+// and an empty argument disappears. On WP Engine a valueWrite runs
+// runCommandPHP from stdin with `wp eval-file -` instead, passing the command
+// words and each argument as evalArg encodes them, and the native wp-cli
+// command runs inside that process.
 type valueWrite struct {
 	cmd *wpcli.Command // wp-cli command words, e.g. post meta update
-	// script is the PHP eval-file runs on WP Engine. It reads the encoded
-	// args from $args and should report like cmd does.
-	script string
-	call   string // PHP function script calls, shown in dry-run output
 	// ids names the identifying arguments that come before the value, e.g.
 	// post ID and meta key. None may be empty.
 	ids   []string
@@ -84,29 +81,37 @@ func evalArg(s string) string {
 	return evalArgPrefix + base64.StdEncoding.EncodeToString([]byte(s))
 }
 
-// execEvalFile runs w.script through `wp eval-file -` with w.args and
-// w.value encoded by evalArg. Verbose and dry-run output show the identifying
-// arguments and redact the value.
+// execEvalFile runs w through `wp eval-file -` and runCommandPHP, with the
+// command words, w.args and w.value encoded by evalArg. Verbose and dry-run
+// output show the command words and identifying arguments and redact the
+// value.
 func (rc *RunContext) execEvalFile(ctx context.Context, site *registry.Site, w valueWrite) (internalssh.ExecResult, error) {
 	cmd := wpcli.New("eval-file", "-")
+	words := strings.Fields(w.cmd.Name())
+	for _, word := range words {
+		cmd.ArgShown(evalArg(word), word)
+	}
 	for _, a := range w.args {
 		cmd.ArgShown(evalArg(a), fmt.Sprintf("<%s %q>", evalArgPrefix, a))
 	}
 	cmd.ArgShown(evalArg(w.value), wpcli.Redact(w.value))
-	shown := cmd.Display(site.WPPath) + " < [PHP calling " + w.call + "]"
-	return rc.execWPShown(ctx, site, cmd.Build(site.WPPath), shown, strings.NewReader(w.script))
+	shown := cmd.Display(site.WPPath) + " < [PHP running the decoded wp command]"
+	script := fmt.Sprintf(runCommandPHP, len(words)+len(w.args)+1)
+	return rc.execWPShown(ctx, site, cmd.Build(site.WPPath), shown, strings.NewReader(script))
 }
 
-// The eval-file scripts below select, sanitize, compare, and report like the
-// wp-cli commands they replace (wp-cli's user fetcher, CommandWithMeta::update,
-// and Option_Command).
-// Each starts with evalArgsPHP, which decodes $args into $decoded and stops
-// unless it holds exactly the expected number of evalArg words.
-
-// evalArgsPHP decodes $args. Prepend it to a script that sets $want first.
-const evalArgsPHP = `
-if ( count( $args ) !== $want ) {
-	WP_CLI::error( sprintf( 'Expected %d arguments, got %d.', $want, count( $args ) ) );
+// runCommandPHP decodes its evalArg arguments and runs them as a wp-cli
+// command in the eval-file process, so the native command selects,
+// sanitizes, writes, and reports. It parses the words as wp-cli parses its
+// own argv and runs them as WP_CLI::runcommand does in-process: a value such
+// as --x is a flag there too. It refuses a global parameter such as --quiet,
+// which wp-cli applies at startup but run_command cannot. It runs nothing
+// unless it holds exactly as many words as execEvalFile sent, so a word the
+// gateway dropped cannot shift the value into an identifying argument or
+// leave the command to read its value from stdin.
+const runCommandPHP = `<?php
+if ( count( $args ) !== %d ) {
+	WP_CLI::error( 'Unexpected argument count.' );
 }
 $prefix  = '` + evalArgPrefix + `';
 $decoded = array();
@@ -117,85 +122,9 @@ foreach ( $args as $arg ) {
 	}
 	$decoded[] = $raw;
 }
-`
-
-const postMetaUpdatePHP = `<?php
-$want = 3;` + evalArgsPHP + `
-list( $id, $key, $value ) = $decoded;
-$post = get_post( (int) $id );
-if ( ! $post ) {
-	WP_CLI::error( "Could not find the post with ID {$id}." );
+list( $positional, $assoc, $runtime ) = WP_CLI::get_configurator()->parse_args( $decoded );
+if ( $runtime ) {
+	WP_CLI::error( 'Global parameters are not supported: --' . implode( ', --', array_keys( $runtime ) ) );
 }
-$value = sanitize_meta( $key, $value, 'post' );
-if ( sanitize_meta( $key, get_post_meta( $post->ID, $key, true ), 'post' ) === $value ) {
-	WP_CLI::success( "Value passed for custom field '{$key}' is unchanged." );
-} elseif ( update_post_meta( $post->ID, wp_slash( $key ), wp_slash( $value ) ) ) {
-	WP_CLI::success( "Updated custom field '{$key}'." );
-} else {
-	WP_CLI::error( "Failed to update custom field '{$key}'." );
-}
-`
-
-const userMetaUpdatePHP = `<?php
-$want = 3;` + evalArgsPHP + `
-list( $user, $key, $value ) = $decoded;
-// Select the user as wp-cli's user fetcher does.
-$invalid = "Invalid user ID, email or login: '{$user}'";
-if ( getenv( 'WP_CLI_FORCE_USER_LOGIN' ) ) {
-	$invalid = "Invalid user login: '{$user}'";
-	$found   = get_user_by( 'login', $user );
-} elseif ( is_numeric( $user ) ) {
-	$found = get_user_by( 'id', $user );
-	if ( $found && get_user_by( 'login', $user ) ) {
-		WP_CLI::warning(
-			sprintf(
-				'Ambiguous user match detected (both ID and user_login exist for identifier \'%d\'). WP-CLI will default to the ID, but you can force user_login instead with WP_CLI_FORCE_USER_LOGIN=1.',
-				(int) $user
-			)
-		);
-	}
-} elseif ( is_email( $user ) ) {
-	$found = get_user_by( 'email', $user );
-	if ( ! $found ) {
-		$found = get_user_by( 'login', $user );
-	}
-} else {
-	$found = get_user_by( 'login', $user );
-}
-if ( ! $found ) {
-	WP_CLI::error( $invalid );
-}
-$value = sanitize_meta( $key, $value, 'user' );
-if ( sanitize_meta( $key, get_user_meta( $found->ID, $key, true ), 'user' ) === $value ) {
-	WP_CLI::success( "Value passed for custom field '{$key}' is unchanged." );
-} elseif ( update_user_meta( $found->ID, wp_slash( $key ), wp_slash( $value ) ) ) {
-	WP_CLI::success( "Updated custom field '{$key}'." );
-} else {
-	WP_CLI::error( "Failed to update custom field '{$key}'." );
-}
-`
-
-const optionUpdatePHP = `<?php
-$want = 2;` + evalArgsPHP + `
-list( $key, $value ) = $decoded;
-$value = sanitize_option( $key, $value );
-if ( in_array( $key, array( 'siteurl', 'home', 'category_base', 'tag_base' ), true ) ) {
-	$value = untrailingslashit( $value );
-}
-if ( sanitize_option( $key, get_option( $key ) ) === $value ) {
-	WP_CLI::success( "Value passed for '{$key}' option is unchanged." );
-} elseif ( update_option( $key, $value ) ) {
-	WP_CLI::success( "Updated '{$key}' option." );
-} else {
-	WP_CLI::error( "Could not update option '{$key}'." );
-}
-`
-
-const optionAddPHP = `<?php
-$want = 2;` + evalArgsPHP + `
-list( $key, $value ) = $decoded;
-if ( ! add_option( $key, $value ) ) {
-	WP_CLI::error( "Could not add option '{$key}'. Does it already exist?" );
-}
-WP_CLI::success( "Added '{$key}' option." );
+WP_CLI::get_runner()->run_command( $positional, $assoc, array( 'back_compat_conversions' => true ) );
 `

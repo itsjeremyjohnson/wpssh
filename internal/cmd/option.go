@@ -56,8 +56,6 @@ func (c *OptionGetCmd) Run(g *Globals) error {
 func (c *OptionUpdateCmd) Run(g *Globals) error {
 	return execValueWrite(g, valueWrite{
 		cmd:        wpcli.New("option", "update"),
-		script:     optionUpdatePHP,
-		call:       "update_option",
 		ids:        []string{"option name"},
 		args:       []string{c.Key},
 		value:      c.Value,
@@ -68,8 +66,6 @@ func (c *OptionUpdateCmd) Run(g *Globals) error {
 func (c *OptionAddCmd) Run(g *Globals) error {
 	return execValueWrite(g, valueWrite{
 		cmd:        wpcli.New("option", "add"),
-		script:     optionAddPHP,
-		call:       "add_option",
 		ids:        []string{"option name"},
 		args:       []string{c.Key},
 		value:      c.Value,

@@ -189,12 +189,10 @@ func (c *PostMetaUpdateCmd) Run(g *Globals) error {
 		return fmt.Errorf("wp post meta update: post ID must be positive, got %d", c.ID)
 	}
 	return execValueWrite(g, valueWrite{
-		cmd:    wpcli.New("post", "meta", "update"),
-		script: postMetaUpdatePHP,
-		call:   "update_post_meta",
-		ids:    []string{"post ID", "meta key"},
-		args:   []string{fmt.Sprint(c.ID), c.Key},
-		value:  c.Value,
+		cmd:   wpcli.New("post", "meta", "update"),
+		ids:   []string{"post ID", "meta key"},
+		args:  []string{fmt.Sprint(c.ID), c.Key},
+		value: c.Value,
 	})
 }
 
